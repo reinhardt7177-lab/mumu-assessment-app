@@ -67,7 +67,11 @@ function DemoQr() {
   const [joinUrl, setJoinUrl] = useState("/join/6S24");
 
   useEffect(() => {
-    setJoinUrl(`${window.location.origin}/join/6S24`);
+    const frame = window.requestAnimationFrame(() => {
+      setJoinUrl(`${window.location.origin}/join/6S24`);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
   return (
@@ -91,7 +95,11 @@ function AssessmentHome({ onOpenReview, onOpenAnalysis }: { onOpenReview: () => 
   const [joinUrl, setJoinUrl] = useState("/join/6S24");
 
   useEffect(() => {
-    setJoinUrl(`${window.location.origin}/join/6S24`);
+    const frame = window.requestAnimationFrame(() => {
+      setJoinUrl(`${window.location.origin}/join/6S24`);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
   const toggleMethod = (method: string) => setMethods((current) => current.includes(method) ? current.filter((item) => item !== method) : [...current, method]);
@@ -160,11 +168,11 @@ function AssessmentHome({ onOpenReview, onOpenAnalysis }: { onOpenReview: () => 
       </section>
 
       {creating && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={closeCreator}>
-          <section className="create-modal" onMouseDown={(event) => event.stopPropagation()} aria-labelledby="create-title">
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeCreator(); }}>
+          <section className="create-modal" aria-labelledby="create-title">
             <div className="modal-heading"><div><p className="kicker">평가 만들기 · {step} / 4</p><h2 id="create-title">{step === 1 ? "기본 정보" : step === 2 ? "응답 방법 설정" : step === 3 ? "루브릭 확인" : "배포 준비"}</h2></div><button type="button" onClick={closeCreator} aria-label="닫기">×</button></div>
             <div className="creation-path"><span className={step >= 1 ? "active" : ""}>1 기본 정보</span><i /><span className={step >= 2 ? "active" : ""}>2 평가 방법</span><i /><span className={step >= 3 ? "active" : ""}>3 루브릭</span><i /><span className={step >= 4 ? "active" : ""}>4 배포</span></div>
-            {step === 1 && <div className="wizard-body"><label>평가 이름<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 민주주의의 발전과 사회 변화" autoFocus /></label><div className="field-row"><label>학년·교과<select value={subject} onChange={(event) => setSubject(event.target.value)}><option>6학년 사회</option><option>5학년 국어</option><option>3학년 수학</option></select></label><label>평가 유형<select value={assessmentType} onChange={(event) => setAssessmentType(event.target.value)}><option>독립 수행평가</option><option>지원형 형성평가</option></select></label></div><label>학습 목표<textarea defaultValue="민주주의의 발전이 우리 사회에 미친 변화를 근거와 함께 설명할 수 있다." /></label></div>}
+            {step === 1 && <div className="wizard-body"><label>평가 이름<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 민주주의의 발전과 사회 변화" /></label><div className="field-row"><label>학년·교과<select value={subject} onChange={(event) => setSubject(event.target.value)}><option>6학년 사회</option><option>5학년 국어</option><option>3학년 수학</option></select></label><label>평가 유형<select value={assessmentType} onChange={(event) => setAssessmentType(event.target.value)}><option>독립 수행평가</option><option>지원형 형성평가</option></select></label></div><label>학습 목표<textarea defaultValue="민주주의의 발전이 우리 사회에 미친 변화를 근거와 함께 설명할 수 있다." /></label></div>}
             {step === 2 && <div className="wizard-body"><p className="wizard-guide">학생에게 허용할 응답 방법을 선택하세요. 평가 목적에 따라 여러 방법을 제공할 수 있습니다.</p><div className="method-grid">{[["글쓰기", "직접 입력한 서술형 답안"], ["손글씨 사진", "OCR로 답안을 읽고 원본 확인"], ["말하기", "녹음과 자동 전사문 수합"], ["챗봇 대화", "힌트와 생각 변화 과정 기록"]].map(([name, description]) => <button className={methods.includes(name) ? "selected" : ""} onClick={() => toggleMethod(name)} key={name}><span>{methods.includes(name) ? "✓" : "+"}</span><strong>{name}</strong><small>{description}</small></button>)}</div><div className="setting-row"><span><strong>학생 참여 방식</strong><small>이름과 참여 코드로 입장</small></span><em>QR · 링크</em></div><div className="setting-row"><span><strong>결과 공개</strong><small>교사 확정 후 학생에게 공개</small></span><em>교사 승인</em></div></div>}
             {step === 3 && <div className="wizard-body"><p className="wizard-guide">AI가 제안한 기준을 교사가 확인하고 평가 공개 전에 잠급니다.</p><div className="rubric-preview">{criteria.map((criterion, index) => <article key={criterion.name}><span>{index + 1}</span><div><strong>{criterion.name}</strong><small>{criterion.description}</small></div><em>4수준</em></article>)}</div><button className="ai-draft-button">✦ AI로 수준별 예시 답안 만들기</button><div className="lock-note">▣ 평가를 공개하면 루브릭 v1.0으로 잠깁니다.</div></div>}
             {step === 4 && <div className="wizard-body distribution-preview"><DemoQr /><div><p className="kicker">학생 참여 준비 완료</p><h3>{title || "새로운 학생 평가"}</h3><p>QR 코드, 참여 링크, 수업용 코드로 학생에게 배포할 수 있습니다.</p><div className="join-code"><small>수업용 코드</small><strong>6S24</strong></div><span>{methods.join(" · ") || "응답 방법을 선택하지 않음"}</span></div></div>}
@@ -174,8 +182,8 @@ function AssessmentHome({ onOpenReview, onOpenAnalysis }: { onOpenReview: () => 
       )}
 
       {sharing && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSharing(false)}>
-          <section className="share-modal" onMouseDown={(event) => event.stopPropagation()} aria-labelledby="share-title">
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSharing(false); }}>
+          <section className="share-modal" aria-labelledby="share-title">
             <div className="modal-heading"><div><p className="kicker">학생 배포</p><h2 id="share-title">QR·링크로 평가 공유</h2></div><button onClick={() => setSharing(false)} aria-label="닫기">×</button></div>
             <div className="share-body"><DemoQr /><div><span className="success-pill">학생 참여 가능</span><h3>민주주의의 발전과 사회 변화</h3><p>QR을 스캔하면 교사용 메뉴 없이 학생 시험지만 바로 열립니다.</p><label>학생 시험지 링크<div><input readOnly value={joinUrl} /><button onClick={async () => { await navigator.clipboard?.writeText(joinUrl); setCopied(true); }}>{copied ? "복사됨" : "링크 복사"}</button></div></label><div className="share-code"><span>수업용 코드</span><strong>6S24</strong></div></div></div>
             <div className="share-summary"><span><strong>응답 방법</strong> 글쓰기 · 손글씨 사진 · 말하기</span><span><strong>현재 수합</strong> 18 / 24명</span><span><strong>마감</strong> 오늘 오후 4:00</span></div>
