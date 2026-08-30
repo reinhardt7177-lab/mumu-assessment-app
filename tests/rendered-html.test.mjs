@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-async function render() {
+async function render(pathname = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
+    new Request(`http://localhost${pathname}`, { headers: { accept: "text/html" } }),
     { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
     { waitUntil() {}, passThroughOnException() {} },
   );
@@ -25,4 +25,17 @@ test("server-renders the Mumu assessment workspace", async () => {
   assert.match(html, /QR·링크 배포/);
   assert.match(html, /이준용/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview/);
+});
+
+test("student QR route renders only the exam experience", async () => {
+  const response = await render("/join/6S24");
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /학생 시험 화면/);
+  assert.match(html, /민주주의의 발전과 사회 변화/);
+  assert.match(html, /답안 제출하기/);
+  assert.doesNotMatch(html, /교사 검토/);
+  assert.doesNotMatch(html, /형성 분석/);
+  assert.doesNotMatch(html, /이준용 선생님/);
 });

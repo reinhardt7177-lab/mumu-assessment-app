@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 
 type View = "assessments" | "review" | "respond" | "formative";
 type ResponseMode = "text" | "photo" | "speech";
@@ -63,11 +64,20 @@ function StatusToast({ children }: { children: React.ReactNode }) {
 }
 
 function DemoQr() {
-  const cells = "111111101010101111111100000101110101000001101110101011101011101101110101101101011101101110101010101011101100000101010101000001111111101010101111111000000000111010000000101011111001110101010111001011101011100101010111010101101110100011101101001000101111101010110111011100010001000101111010111011111011101010001000001000111010001111111101010101010111111100000101101101000001101110101001111011101101110101100010101101101110101111011011101100000101000001000001111111101101101111111";
-  return <div className="demo-qr" aria-label="학생 참여용 시연 QR 코드">{cells.split("").map((cell, index) => <i className={cell === "1" ? "on" : ""} key={index} />)}</div>;
+  const [joinUrl, setJoinUrl] = useState("/join/6S24");
+
+  useEffect(() => {
+    setJoinUrl(`${window.location.origin}/join/6S24`);
+  }, []);
+
+  return (
+    <div className="demo-qr" aria-label="학생 시험지 참여 QR 코드">
+      <QRCodeSVG value={joinUrl} size={168} level="H" marginSize={1} bgColor="#ffffff" fgColor="#0e2c49" title="학생 시험지 열기" />
+    </div>
+  );
 }
 
-function AssessmentHome({ onOpenReview, onPreviewStudent, onOpenAnalysis }: { onOpenReview: () => void; onPreviewStudent: () => void; onOpenAnalysis: () => void }) {
+function AssessmentHome({ onOpenReview, onOpenAnalysis }: { onOpenReview: () => void; onOpenAnalysis: () => void }) {
   const [assessments, setAssessments] = useState(initialAssessments);
   const [creating, setCreating] = useState(false);
   const [step, setStep] = useState(1);
@@ -78,6 +88,11 @@ function AssessmentHome({ onOpenReview, onPreviewStudent, onOpenAnalysis }: { on
   const [subject, setSubject] = useState("6학년 사회");
   const [assessmentType, setAssessmentType] = useState("독립 수행평가");
   const [methods, setMethods] = useState(["글쓰기"]);
+  const [joinUrl, setJoinUrl] = useState("/join/6S24");
+
+  useEffect(() => {
+    setJoinUrl(`${window.location.origin}/join/6S24`);
+  }, []);
 
   const toggleMethod = (method: string) => setMethods((current) => current.includes(method) ? current.filter((item) => item !== method) : [...current, method]);
   const openCreator = () => { setCreating(true); setStep(1); setCreated(false); };
@@ -162,9 +177,9 @@ function AssessmentHome({ onOpenReview, onPreviewStudent, onOpenAnalysis }: { on
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setSharing(false)}>
           <section className="share-modal" onMouseDown={(event) => event.stopPropagation()} aria-labelledby="share-title">
             <div className="modal-heading"><div><p className="kicker">학생 배포</p><h2 id="share-title">QR·링크로 평가 공유</h2></div><button onClick={() => setSharing(false)} aria-label="닫기">×</button></div>
-            <div className="share-body"><DemoQr /><div><span className="success-pill">학생 참여 가능</span><h3>민주주의의 발전과 사회 변화</h3><p>학생은 로그인 없이 이름과 참여 코드로 들어올 수 있습니다.</p><label>참여 링크<div><input readOnly value="https://mumu-eval.site/join/6S24" /><button onClick={() => setCopied(true)}>{copied ? "복사됨" : "링크 복사"}</button></div></label><div className="share-code"><span>수업용 코드</span><strong>6S24</strong></div></div></div>
+            <div className="share-body"><DemoQr /><div><span className="success-pill">학생 참여 가능</span><h3>민주주의의 발전과 사회 변화</h3><p>QR을 스캔하면 교사용 메뉴 없이 학생 시험지만 바로 열립니다.</p><label>학생 시험지 링크<div><input readOnly value={joinUrl} /><button onClick={async () => { await navigator.clipboard?.writeText(joinUrl); setCopied(true); }}>{copied ? "복사됨" : "링크 복사"}</button></div></label><div className="share-code"><span>수업용 코드</span><strong>6S24</strong></div></div></div>
             <div className="share-summary"><span><strong>응답 방법</strong> 글쓰기 · 손글씨 사진 · 말하기</span><span><strong>현재 수합</strong> 18 / 24명</span><span><strong>마감</strong> 오늘 오후 4:00</span></div>
-            <div className="modal-actions"><button className="outline-button" onClick={onPreviewStudent}>학생 화면 미리보기</button><button className="primary-button" onClick={() => setSharing(false)}>배포 완료</button></div>
+            <div className="modal-actions"><button className="outline-button" onClick={() => window.open("/join/6S24", "_blank", "noopener,noreferrer")}>학생 시험지 열기</button><button className="primary-button" onClick={() => setSharing(false)}>배포 완료</button></div>
           </section>
         </div>
       )}
@@ -385,7 +400,7 @@ export default function Home() {
           <div><p className="kicker">6학년 사회 · 민주주의의 발전</p><h1>{pageTitle}</h1></div>
           <div className="top-actions"><span className="sync-state"><i /> 모든 변경사항 저장됨</span><button aria-label="알림">♢<b>2</b></button></div>
         </header>
-        {view === "assessments" && <AssessmentHome onOpenReview={() => setView("review")} onPreviewStudent={() => setView("respond")} onOpenAnalysis={() => setView("formative")} />}
+        {view === "assessments" && <AssessmentHome onOpenReview={() => setView("review")} onOpenAnalysis={() => setView("formative")} />}
         {view === "review" && <TeacherReview />}
         {view === "respond" && <StudentResponse />}
         {view === "formative" && <FormativeAnalysis />}
