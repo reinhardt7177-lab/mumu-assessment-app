@@ -6,6 +6,15 @@ import { QRCodeSVG } from "qrcode.react";
 type View = "assessments" | "review" | "respond" | "formative";
 type ResponseMode = "text" | "photo" | "speech";
 type SourceMode = "text" | "audio" | "image";
+type QuestionKind = "서술형" | "선택형" | "말하기";
+
+type AssessmentQuestion = {
+  id: string;
+  prompt: string;
+  kind: QuestionKind;
+  criterion: string;
+  points: number;
+};
 
 const studentRows = [
   { name: "김민지", submitted: "5분 전 제출", flag: "근거 확인 필요" },
@@ -38,6 +47,16 @@ const criteria = [
     description: "변화와 사회적 영향을 연결했지만 관계를 더 설명할 수 있습니다.",
     evidence: "‘공정성과 책임성을 높였습니다’",
     suggested: 2,
+  },
+];
+
+const initialQuestions: AssessmentQuestion[] = [
+  {
+    id: "question-1",
+    prompt: "민주주의의 발전이 우리 사회에 가져온 변화를 두 가지 제시하고, 각각이 시민의 삶에 어떤 영향을 주었는지 설명하세요.",
+    kind: "서술형",
+    criterion: "개념 이해",
+    points: 20,
   },
 ];
 
@@ -92,6 +111,8 @@ function AssessmentHome({ onOpenReview, onOpenAnalysis }: { onOpenReview: () => 
   const [subject, setSubject] = useState("6학년 사회");
   const [assessmentType, setAssessmentType] = useState("독립 수행평가");
   const [methods, setMethods] = useState(["글쓰기"]);
+  const [questions, setQuestions] = useState<AssessmentQuestion[]>(initialQuestions);
+  const [questionsGenerated, setQuestionsGenerated] = useState(false);
   const [joinUrl, setJoinUrl] = useState("/join/6S24");
 
   useEffect(() => {
@@ -103,6 +124,19 @@ function AssessmentHome({ onOpenReview, onOpenAnalysis }: { onOpenReview: () => 
   }, []);
 
   const toggleMethod = (method: string) => setMethods((current) => current.includes(method) ? current.filter((item) => item !== method) : [...current, method]);
+  const updateQuestion = (id: string, patch: Partial<AssessmentQuestion>) => setQuestions((current) => current.map((question) => question.id === id ? { ...question, ...patch } : question));
+  const addQuestion = () => setQuestions((current) => [...current, { id: `question-${Date.now()}`, prompt: "", kind: "서술형", criterion: "개념 이해", points: 10 }]);
+  const removeQuestion = (id: string) => setQuestions((current) => current.filter((question) => question.id !== id));
+  const generateQuestionDrafts = () => {
+    setQuestions([
+      { id: `question-${Date.now()}-1`, prompt: "민주주의의 발전이 우리 사회에 가져온 변화를 두 가지 제시하고, 시민의 삶과 연결하여 설명하세요.", kind: "서술형", criterion: "개념 이해", points: 20 },
+      { id: `question-${Date.now()}-2`, prompt: "선거 제도 또는 언론의 자유가 민주주의 발전에 기여한 사례를 하나 들고, 그 까닭을 근거와 함께 쓰세요.", kind: "서술형", criterion: "근거 제시", points: 20 },
+      { id: `question-${Date.now()}-3`, prompt: "민주주의가 더 발전하기 위해 시민이 할 수 있는 일을 제안하고, 그렇게 생각한 이유를 말해 보세요.", kind: "말하기", criterion: "논리적 설명", points: 10 },
+    ]);
+    setQuestionsGenerated(true);
+  };
+  const questionPoints = useMemo(() => questions.reduce((sum, question) => sum + question.points, 0), [questions]);
+  const hasValidQuestions = questions.length > 0 && questions.every((question) => question.prompt.trim().length > 0 && question.points > 0);
   const openCreator = () => { setCreating(true); setStep(1); setCreated(false); };
   const closeCreator = () => setCreating(false);
   const finishCreation = () => {
@@ -170,13 +204,14 @@ function AssessmentHome({ onOpenReview, onOpenAnalysis }: { onOpenReview: () => 
       {creating && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeCreator(); }}>
           <section className="create-modal" aria-labelledby="create-title">
-            <div className="modal-heading"><div><p className="kicker">평가 만들기 · {step} / 4</p><h2 id="create-title">{step === 1 ? "기본 정보" : step === 2 ? "응답 방법 설정" : step === 3 ? "루브릭 확인" : "배포 준비"}</h2></div><button type="button" onClick={closeCreator} aria-label="닫기">×</button></div>
-            <div className="creation-path"><span className={step >= 1 ? "active" : ""}>1 기본 정보</span><i /><span className={step >= 2 ? "active" : ""}>2 평가 방법</span><i /><span className={step >= 3 ? "active" : ""}>3 루브릭</span><i /><span className={step >= 4 ? "active" : ""}>4 배포</span></div>
+            <div className="modal-heading"><div><p className="kicker">평가 만들기 · {step} / 5</p><h2 id="create-title">{step === 1 ? "기본 정보" : step === 2 ? "평가 문항 만들기" : step === 3 ? "응답 방법 설정" : step === 4 ? "루브릭 확인" : "배포 준비"}</h2></div><button type="button" onClick={closeCreator} aria-label="닫기">×</button></div>
+            <div className="creation-path"><span className={step >= 1 ? "active" : ""}>1 기본 정보</span><i /><span className={step >= 2 ? "active" : ""}>2 평가 문항</span><i /><span className={step >= 3 ? "active" : ""}>3 평가 방법</span><i /><span className={step >= 4 ? "active" : ""}>4 루브릭</span><i /><span className={step >= 5 ? "active" : ""}>5 배포</span></div>
             {step === 1 && <div className="wizard-body"><label>평가 이름<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 민주주의의 발전과 사회 변화" /></label><div className="field-row"><label>학년·교과<select value={subject} onChange={(event) => setSubject(event.target.value)}><option>6학년 사회</option><option>5학년 국어</option><option>3학년 수학</option></select></label><label>평가 유형<select value={assessmentType} onChange={(event) => setAssessmentType(event.target.value)}><option>독립 수행평가</option><option>지원형 형성평가</option></select></label></div><label>학습 목표<textarea defaultValue="민주주의의 발전이 우리 사회에 미친 변화를 근거와 함께 설명할 수 있다." /></label></div>}
-            {step === 2 && <div className="wizard-body"><p className="wizard-guide">학생에게 허용할 응답 방법을 선택하세요. 평가 목적에 따라 여러 방법을 제공할 수 있습니다.</p><div className="method-grid">{[["글쓰기", "직접 입력한 서술형 답안"], ["손글씨 사진", "OCR로 답안을 읽고 원본 확인"], ["말하기", "녹음과 자동 전사문 수합"], ["챗봇 대화", "힌트와 생각 변화 과정 기록"]].map(([name, description]) => <button className={methods.includes(name) ? "selected" : ""} onClick={() => toggleMethod(name)} key={name}><span>{methods.includes(name) ? "✓" : "+"}</span><strong>{name}</strong><small>{description}</small></button>)}</div><div className="setting-row"><span><strong>학생 참여 방식</strong><small>이름과 참여 코드로 입장</small></span><em>QR · 링크</em></div><div className="setting-row"><span><strong>결과 공개</strong><small>교사 확정 후 학생에게 공개</small></span><em>교사 승인</em></div></div>}
-            {step === 3 && <div className="wizard-body"><p className="wizard-guide">AI가 제안한 기준을 교사가 확인하고 평가 공개 전에 잠급니다.</p><div className="rubric-preview">{criteria.map((criterion, index) => <article key={criterion.name}><span>{index + 1}</span><div><strong>{criterion.name}</strong><small>{criterion.description}</small></div><em>4수준</em></article>)}</div><button className="ai-draft-button">✦ AI로 수준별 예시 답안 만들기</button><div className="lock-note">▣ 평가를 공개하면 루브릭 v1.0으로 잠깁니다.</div></div>}
-            {step === 4 && <div className="wizard-body distribution-preview"><DemoQr /><div><p className="kicker">학생 참여 준비 완료</p><h3>{title || "새로운 학생 평가"}</h3><p>QR 코드, 참여 링크, 수업용 코드로 학생에게 배포할 수 있습니다.</p><div className="join-code"><small>수업용 코드</small><strong>6S24</strong></div><span>{methods.join(" · ") || "응답 방법을 선택하지 않음"}</span></div></div>}
-            <div className="modal-actions"><button type="button" className="outline-button" onClick={() => step === 1 ? closeCreator() : setStep((current) => current - 1)}>{step === 1 ? "취소" : "이전"}</button><button type="button" className="primary-button" onClick={() => step === 4 ? finishCreation() : setStep((current) => current + 1)}>{step === 4 ? "평가 만들고 배포" : "다음"}</button></div>
+            {step === 2 && <div className="wizard-body question-builder"><div className="question-builder-heading"><div><p className="wizard-guide">학습 목표를 실제로 확인할 평가 문항을 만드세요. 각 문항은 평가 기준과 직접 연결됩니다.</p><span>총 {questions.length}문항 · {questionPoints}점</span></div><button type="button" className="ai-question-button" onClick={generateQuestionDrafts}>✦ AI 문항 초안 생성</button></div>{questionsGenerated && <StatusToast>학습 목표를 바탕으로 문항 초안을 만들었습니다. 교사가 반드시 검토해 주세요.</StatusToast>}<div className="question-list">{questions.map((question, index) => <article className="question-editor" key={question.id}><div className="question-editor-head"><strong>문항 {index + 1}</strong><div><select aria-label={`문항 ${index + 1} 유형`} value={question.kind} onChange={(event) => updateQuestion(question.id, { kind: event.target.value as QuestionKind })}><option>서술형</option><option>선택형</option><option>말하기</option></select><button type="button" onClick={() => removeQuestion(question.id)} aria-label={`문항 ${index + 1} 삭제`}>삭제</button></div></div><label>문항 내용<textarea value={question.prompt} onChange={(event) => updateQuestion(question.id, { prompt: event.target.value })} placeholder="학생에게 제시할 평가 문항을 입력하세요." /></label><div className="question-meta"><label>연결 평가 기준<select value={question.criterion} onChange={(event) => updateQuestion(question.id, { criterion: event.target.value })}>{criteria.map((criterion) => <option key={criterion.name}>{criterion.name}</option>)}</select></label><label>배점<input type="number" min="1" max="100" value={question.points} onChange={(event) => updateQuestion(question.id, { points: Number(event.target.value) })} /></label></div></article>)}</div><button type="button" className="add-question-button" onClick={addQuestion}>＋ 문항 직접 추가</button>{!hasValidQuestions && <p className="question-warning">문항 내용과 1점 이상의 배점을 입력해야 다음 단계로 이동할 수 있습니다.</p>}</div>}
+            {step === 3 && <div className="wizard-body"><p className="wizard-guide">학생에게 허용할 응답 방법을 선택하세요. 평가 목적에 따라 여러 방법을 제공할 수 있습니다.</p><div className="method-grid">{[["글쓰기", "직접 입력한 서술형 답안"], ["손글씨 사진", "OCR로 답안을 읽고 원본 확인"], ["말하기", "녹음과 자동 전사문 수합"], ["챗봇 대화", "힌트와 생각 변화 과정 기록"]].map(([name, description]) => <button className={methods.includes(name) ? "selected" : ""} onClick={() => toggleMethod(name)} key={name}><span>{methods.includes(name) ? "✓" : "+"}</span><strong>{name}</strong><small>{description}</small></button>)}</div><div className="setting-row"><span><strong>학생 참여 방식</strong><small>이름과 참여 코드로 입장</small></span><em>QR · 링크</em></div><div className="setting-row"><span><strong>결과 공개</strong><small>교사 확정 후 학생에게 공개</small></span><em>교사 승인</em></div></div>}
+            {step === 4 && <div className="wizard-body"><p className="wizard-guide">AI가 제안한 기준을 교사가 확인하고 평가 공개 전에 잠급니다.</p><div className="rubric-preview">{criteria.map((criterion, index) => <article key={criterion.name}><span>{index + 1}</span><div><strong>{criterion.name}</strong><small>{criterion.description}</small></div><em>4수준</em></article>)}</div><button className="ai-draft-button">✦ AI로 수준별 예시 답안 만들기</button><div className="lock-note">▣ 평가를 공개하면 루브릭 v1.0으로 잠깁니다.</div></div>}
+            {step === 5 && <div className="wizard-body distribution-preview"><DemoQr /><div><p className="kicker">학생 참여 준비 완료</p><h3>{title || "새로운 학생 평가"}</h3><p>{questions.length}개 평가 문항을 QR 코드, 참여 링크, 수업용 코드로 학생에게 배포할 수 있습니다.</p><div className="join-code"><small>수업용 코드</small><strong>6S24</strong></div><span>{methods.join(" · ") || "응답 방법을 선택하지 않음"}</span></div></div>}
+            <div className="modal-actions"><button type="button" className="outline-button" onClick={() => step === 1 ? closeCreator() : setStep((current) => current - 1)}>{step === 1 ? "취소" : "이전"}</button><button type="button" className="primary-button" disabled={step === 2 && !hasValidQuestions} onClick={() => step === 5 ? finishCreation() : setStep((current) => current + 1)}>{step === 5 ? "평가 만들고 배포" : "다음"}</button></div>
           </section>
         </div>
       )}
