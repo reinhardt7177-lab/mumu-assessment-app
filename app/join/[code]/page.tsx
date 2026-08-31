@@ -7,8 +7,8 @@ type JoinPageProps = {
 
 export async function generateMetadata({ params }: JoinPageProps): Promise<Metadata> {
   const { code } = await params;
-  const title = "민주주의의 발전과 사회 변화 | 학생 시험지";
-  const description = `참여 코드 ${code.toUpperCase()} · 6학년 사회 학생 평가`;
+  const title = "학생 시험지 | Mumu 평가";
+  const description = `참여 코드 ${code.toUpperCase()} · 선생님이 배포한 학생 평가`;
 
   return {
     title,

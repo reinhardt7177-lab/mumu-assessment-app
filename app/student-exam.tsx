@@ -1,77 +1,125 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Answers, AssessmentDefinition, AttemptRecord, ReviewRecord } from "../lib/assessment-domain";
+import { requestJson, RequestError } from "../lib/client-api";
 
-type ResponseMode = "text" | "photo" | "speech";
-
-function SubmissionToast() {
-  return <div className="status-toast" role="status"><span>✓</span>답안이 제출되었습니다. 선생님의 확인 후 결과가 공개됩니다.</div>;
-}
+type Exam = { id: string; status: "published" | "closed"; definition: AssessmentDefinition };
+type ExamPayload = { assessment: Exam; attempt: AttemptRecord | null; result: ReviewRecord | null };
 
 export default function StudentExam({ code }: { code: string }) {
-  const [mode, setMode] = useState<ResponseMode>("text");
-  const [answer, setAnswer] = useState("");
-  const [recording, setRecording] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const [uploaded, setUploaded] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [exam, setExam] = useState<Exam | null>(null);
+  const [attempt, setAttempt] = useState<AttemptRecord | null>(null);
+  const [result, setResult] = useState<ReviewRecord | null>(null);
+  const [answers, setAnswers] = useState<Answers>({});
+  const [label, setLabel] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [conflicted, setConflicted] = useState(false);
+  const attemptRef = useRef<AttemptRecord | null>(null);
+  const answersRef = useRef<Answers>({});
+  const flight = useRef<Promise<void> | null>(null);
+  const conflict = useRef(false);
+  const started = useRef(0);
+  const baseSeconds = useRef(0);
 
   useEffect(() => {
-    if (!recording) return;
-    const timer = window.setInterval(() => setSeconds((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [recording]);
+    const controller = new AbortController();
+    requestJson<ExamPayload>(`/api/student/${code}`, { signal: controller.signal }).then(data => {
+      setExam(data.assessment); setAttempt(data.attempt); attemptRef.current = data.attempt;
+      setAnswers(data.attempt?.answers ?? {}); answersRef.current = data.attempt?.answers ?? {};
+      setResult(data.result); setLabel(data.attempt?.studentLabel ?? "");
+      baseSeconds.current = data.attempt?.timeSpentSeconds ?? 0; started.current = Date.now();
+      if (data.attempt) setNotice(data.attempt.status === "submitted" ? "서버에 제출된 답안을 불러왔어요." : "서버에 저장된 답안을 불러왔어요.");
+    }).catch(reason => { if (!controller.signal.aborted) setError(reason.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [code]);
 
-  const time = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-  const reset = () => {
-    setAnswer("");
-    setSeconds(0);
-    setUploaded(false);
-    setSubmitted(false);
-    setRecording(false);
+  const save = useCallback(async (submit = false) => {
+    while (flight.current) await flight.current;
+    const current = attemptRef.current;
+    if (!current || current.status === "submitted" || conflict.current) return;
+    const snapshot = { ...answersRef.current };
+    setNotice(submit ? "서버에 제출하는 중…" : "서버에 저장하는 중…");
+    setError("");
+    const operation = (async () => {
+      try {
+        const data = await requestJson<{ attempt: AttemptRecord }>(`/api/student/${code}/attempt`, {
+          method: "PUT", body: JSON.stringify({ answers: snapshot, revision: current.revision, timeSpentSeconds: Math.min(86400, baseSeconds.current + Math.floor((Date.now() - started.current) / 1000)), submit }),
+        });
+        attemptRef.current = data.attempt; setAttempt(data.attempt);
+        if (JSON.stringify(snapshot) === JSON.stringify(answersRef.current)) {
+          setDirty(false); setNotice(submit ? "제출 완료 · 서버 저장이 확인됐어요." : `서버 저장 완료 · ${new Date(data.attempt.savedAt).toLocaleTimeString("ko-KR")}`);
+        } else setNotice("새로 쓴 내용은 저장 대기 중이에요.");
+      } catch (reason) {
+        if (reason instanceof RequestError && reason.status === 409) { conflict.current = true; setConflicted(true); }
+        setError(reason instanceof Error ? reason.message : "저장에 실패했어요. 화면을 닫지 마세요.");
+        setNotice("아직 서버에 저장되지 않은 내용이 있어요.");
+      }
+    })();
+    flight.current = operation;
+    await operation;
+    if (flight.current === operation) flight.current = null;
+  }, [code]);
+
+  useEffect(() => {
+    if (!dirty || !attempt || attempt.status === "submitted" || busy) return;
+    const timer = window.setTimeout(() => void save(), 1200);
+    return () => window.clearTimeout(timer);
+  }, [answers, dirty, attempt, busy, save]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  const start = async () => {
+    setBusy(true); setError("");
+    try {
+      const data = await requestJson<{ attempt: AttemptRecord }>(`/api/student/${code}/attempt`, { method: "POST", body: JSON.stringify({ studentLabel: label }) });
+      attemptRef.current = data.attempt; setAttempt(data.attempt);
+      answersRef.current = data.attempt.answers; setAnswers(data.attempt.answers);
+      baseSeconds.current = data.attempt.timeSpentSeconds; started.current = Date.now();
+      setNotice("참여 정보가 서버에 저장됐어요. 이제 답을 써보세요.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "참여하지 못했어요."); }
+    finally { setBusy(false); }
   };
+  const submit = async () => { setBusy(true); await save(true); setBusy(false); };
+  const refreshResult = async () => {
+    setBusy(true); setError("");
+    try { const data = await requestJson<ExamPayload>(`/api/student/${code}`); setResult(data.result); if (!data.result) setNotice("선생님이 아직 결과를 공개하지 않았어요."); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "결과를 불러오지 못했어요."); }
+    finally { setBusy(false); }
+  };
+  const submitted = attempt?.status === "submitted";
+  const completed = exam?.definition.questions.filter(q => answers[q.id]?.trim()).length ?? 0;
 
-  return (
-    <main className="exam-shell">
-      <header className="exam-header">
-        <div className="exam-brand"><span>M</span><strong>Mumu 평가</strong></div>
-        <div className="exam-security"><i /> 학생 시험 화면</div>
-      </header>
-
-      <div className="student-page standalone-student-page">
-        <div className="student-topline"><span>6학년 사회 · 독립 수행평가</span><strong>문항 1 / 1</strong></div>
-        <section className="exam-title-card">
-          <div>
-            <p className="kicker">참여 코드 {code}</p>
-            <h1>민주주의의 발전과 사회 변화</h1>
-            <p>아래 과제를 읽고 편한 방법으로 답해 주세요. 답은 제출 전까지 바꿀 수 있어요.</p>
-          </div>
-          <span className="exam-time">예상 10분</span>
-        </section>
-
-        <section className="goal-banner"><div className="goal-icon">◎</div><div><p className="kicker">학습 목표</p><h2>민주주의의 발전이 우리 사회에 미친 변화를 근거와 함께 설명할 수 있어요.</h2></div></section>
-
-        <section className="response-card">
-          <div className="student-task-heading">
-            <div><p className="kicker">평가 과제</p><h1>{mode === "speech" ? "말로 설명해 보세요" : mode === "photo" ? "손글씨 답안을 촬영하세요" : "내 생각을 글로 써보세요"}</h1></div>
-            <div className="mode-switch" role="tablist" aria-label="응답 방식">
-              <button className={mode === "text" ? "active" : ""} onClick={() => setMode("text")}>▤ 글쓰기</button>
-              <button className={mode === "photo" ? "active" : ""} onClick={() => setMode("photo")}>▧ 사진</button>
-              <button className={mode === "speech" ? "active" : ""} onClick={() => setMode("speech")}>◉ 말하기</button>
-            </div>
-          </div>
-
-          <div className="student-question">민주주의가 발전하면서 우리 사회에 나타난 변화를 두 가지 이상 들고, 그 변화가 왜 중요한지 설명하세요.</div>
-
-          {mode === "text" && <div className="write-mode"><label htmlFor="student-exam-answer">나의 답안</label><textarea id="student-exam-answer" value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="평가 과제에 대한 내 생각을 써보세요." /><div className="writing-meta"><span>이 기기에 자동 저장 중</span><span>{answer.length}자</span></div></div>}
-          {mode === "photo" && <div className={`photo-mode ${uploaded ? "uploaded" : ""}`}><div className="upload-icon">▧</div><h2>{uploaded ? "답안 이미지가 준비되었습니다" : "답안이 잘 보이도록 촬영해 주세요"}</h2><p>{uploaded ? "사진을 제출하면 선생님이 원본 답안과 함께 확인합니다." : "흐림, 그림자, 잘림이 없도록 찍으면 글씨를 더 정확하게 읽을 수 있어요."}</p><button onClick={() => setUploaded(true)}>{uploaded ? "다른 사진 선택" : "사진 불러오기"}</button></div>}
-          {mode === "speech" && <div className="speech-mode"><div className="record-zone"><button className={`record-button ${recording ? "recording" : ""}`} onClick={() => setRecording((value) => !value)} aria-label={recording ? "녹음 멈추기" : "녹음 시작"}><span>{recording ? "■" : "●"}</span></button><div><p className={recording ? "record-state live" : "record-state"}>{recording ? "녹음 중" : "녹음 준비"}</p><strong className="record-time">{time}</strong><div className="waveform student-wave" aria-hidden="true">{Array.from({ length: 34 }).map((_, i) => <i key={i} style={{ height: `${10 + ((i * 17) % 36)}px`, opacity: recording ? 1 : .35 }} />)}</div></div></div><div className="transcript-card"><p className="kicker">말하기 안내</p><p>과제에 답한 뒤, 그렇게 생각한 이유와 근거를 차례대로 말해 주세요. 녹음을 마치면 전사문을 확인할 수 있어요.</p></div><div className="privacy-note">▣ 내 답변은 안전하게 저장되며 담당 선생님에게만 제출됩니다.</div></div>}
-
-          {submitted && <SubmissionToast />}
-          <div className="student-actions"><button className="outline-button" onClick={reset}>다시 하기</button><button className="primary-button" onClick={() => { setRecording(false); setSubmitted(true); }}>{submitted ? "제출 완료" : "답안 제출하기"}</button></div>
-        </section>
-        <p className="exam-footer-note">평가 중 문제가 생기면 화면을 닫지 말고 선생님께 알려 주세요.</p>
-      </div>
-    </main>
-  );
+  return <main className="exam-shell real-exam">
+    <header className="exam-header"><div className="exam-brand"><span>M</span><strong>Mumu 평가</strong></div><span>학생 시험지</span></header>
+    <div className="student-page standalone-student-page">
+      {loading && <p role="status">평가를 불러오는 중이에요…</p>}
+      {error && <div className="ai-generation-error" role="alert">{error}</div>}
+      {exam && <>
+        <section className="exam-title-card"><div><p className="kicker">{exam.definition.subject} · {exam.definition.type}</p><h1>{exam.definition.title}</h1><p>{exam.definition.learningGoal}</p></div><strong>{completed} / {exam.definition.questions.length}문항</strong></section>
+        {!attempt && exam.status === "published" && <section className="response-card student-identification"><h2>누구의 답안인가요?</h2><p>선생님이 알려준 번호 또는 별칭만 써주세요. 이 화면에는 교사용 메뉴가 없어요.</p><label htmlFor="student-label">번호 또는 별칭</label><input id="student-label" maxLength={40} value={label} onChange={event => setLabel(event.target.value)} placeholder="예: 3반 12번" autoComplete="off" /><button className="primary-button" onClick={start} disabled={busy || !label.trim()}>{busy ? "참여하는 중…" : "평가 시작하기"}</button></section>}
+        {exam.status === "closed" && <p className="wizard-guide">이 평가는 마감되었어요. 저장된 답안과 공개된 결과는 확인할 수 있어요.</p>}
+        {notice && <p className="save-notice" role="status">{notice}</p>}
+        {exam.definition.questions.map((question, index) => <section className="response-card real-question" key={question.id}>
+          <div className="question-editor-head"><p className="kicker">문항 {index + 1}</p><span>{question.points}점 · {question.criterion}</span></div>
+          <h2 style={{ whiteSpace: "pre-wrap" }}>{question.prompt}</h2>
+          <label className="sr-only" htmlFor={`answer-${question.id}`}>문항 {index + 1} 답안</label>
+          <textarea id={`answer-${question.id}`} value={answers[question.id] ?? ""} maxLength={10000} disabled={!attempt || submitted || busy || exam.status === "closed"} onChange={event => { const next = { ...answersRef.current, [question.id]: event.target.value }; answersRef.current = next; setAnswers(next); setDirty(true); setNotice("변경 내용 저장 대기 중…"); }} placeholder={attempt ? "나의 생각과 근거를 써주세요." : "위에서 번호 또는 별칭을 입력하고 시작해 주세요."} />
+          <small>{(answers[question.id] ?? "").length} / 10,000자</small>
+        </section>)}
+        {attempt && !submitted && exam.status === "published" && <div className="student-actions"><button className="outline-button" disabled={busy || conflicted} onClick={() => void save()}>지금 저장</button><button className="primary-button" disabled={busy || completed !== exam.definition.questions.length || conflicted} onClick={submit}>{busy ? "저장하는 중…" : "답안 최종 제출"}</button></div>}
+        {submitted && <section className="response-card result-card"><p className="kicker">{label}의 평가 결과</p>{result ? <><h2>성취수준 {result.level} · {result.total} / {result.maxTotal}점</h2><p className="student-feedback">{result.feedback}</p>{result.questionScores.map(score => <p key={score.questionId}>{exam.definition.questions.findIndex(q => q.id === score.questionId) + 1}번 · {score.points}점 — {score.reason}</p>)}</> : <><h2>답안이 제출됐어요.</h2><p>선생님이 확인하고 공개하면 이 시험지에서 내 결과를 볼 수 있어요.</p></>}<button className="outline-button" disabled={busy} onClick={refreshResult}>결과 다시 확인</button></section>}
+        <p className="exam-footer-note">답안은 서버에 저장됩니다. 결과 확인에는 지금 기기의 참여 정보가 필요해요. 공용 기기를 다른 친구에게 넘기기 전 선생님께 알려주세요.</p>
+      </>}
+      {!loading && !exam && <p className="exam-footer-note">제출된 것으로 표시하지 않았습니다. 선생님께 올바른 링크인지 확인해 주세요.</p>}
+    </div>
+  </main>;
 }

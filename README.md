@@ -1,100 +1,53 @@
-# vinext-starter
+# Mumu 평가
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+초등 교사가 성취기준을 고르고 평가 문항·루브릭을 만든 뒤, QR·링크로 답안을 수합하고 근거를 확인해 결과를 공개하는 앱입니다.
 
-## Prerequisites
+> 아직 실제 학생 사용 준비가 완료된 앱이 아닙니다. 운영 DB·교사 로그인 연결, 사진/녹음/대화와 AI 채점, 실배포 검증이 남아 있습니다. 구현된 코드와 실제 운영 상태를 구분한 문서는 [운영 현황](docs/OPERATING_STATUS.md)입니다.
 
-- Node.js `>=22.13.0`
+## 현재 구현
 
-## Quick Start
+- 업로드된 2022 개정 교육과정 PDF에서 추출한 초등 6교과 성취기준 423개.
+- 기본 정보 → 성취기준 → 평가 문항 → 응답 방법 → 루브릭 → 저장·배포.
+- Neon Postgres 기반 평가·문항·학생 답안·교사 채점·공개 결과·채점 이력 저장.
+- Clerk 교사 로그인 + 승인 계정 목록 + 평가별 소유권 검사.
+- 평가마다 고유한 QR·링크. 학생은 번호/별칭으로 참여하고 자신의 답안만 조회.
+- 글 답안 서버 자동 저장·동시 편집 충돌 검출·중복 없는 최종 제출.
+- 교사 직접 채점·근거·피드백 저장, 최종 확정과 학생 공개 분리, CSV 내보내기.
+- 실제 Luna 문항 생성 API. 성공 응답은 운영 크레딧 연결 후 검증해야 함.
+- 이전 예시 화면은 `/demo`, 예시 시험지는 `/demo/student`. 실제 기록과 섞지 않음.
 
-```bash
+## 개발 및 운영 준비
+
+Node.js 22.13 이상, npm을 사용합니다. 운영 대상은 사용자가 선택한 기존 Vercel 프로젝트입니다.
+
+1. `.vercel/project.json`의 프로젝트 연결을 확인합니다.
+2. Neon과 Clerk를 연결하고 `.env.example`의 필수 변수를 Vercel에 등록합니다.
+3. Vercel에서 개발 환경변수를 pull합니다. 기존 `.env.local`의 사용자 정의 변수를 덮어쓰지 않도록 주의합니다. 비밀값은 Git·로그·화면에 노출하지 않습니다.
+4. 필수 설정을 확인한 뒤 `npm run db:migrate`로 스키마를 적용합니다. 운영 DB와 테스트 DB를 분리합니다.
+5. `npm run dev:vercel`로 개발합니다. 저장소가 없으면 자동으로 데모 DB를 만들지 않으며 실제 제출도 허용하지 않습니다.
+
+```sh
 npm install
-npm run dev
-npm run build
+npm test
+npm run lint
+npm run build:vercel
 ```
 
-This starter does not use `wrangler.jsonc`.
+`npm test`는 테스트 전용 PGlite PostgreSQL에서 실제 SQL을 실행합니다. 운영 Neon 접속을 대신 증명하지는 않습니다. 기본 Sites 개발/빌드 명령은 보존했으며 관련 설명은 [기존 개발 환경](docs/LEGACY_SITES_README.md)에 있습니다.
 
-## Included Shape
+## 주요 구조
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```text
+app/                         교사·학생 화면과 권한을 검사하는 API
+lib/assessment-domain.ts     초등 범위·문항·답안·채점 검증
+lib/teacher-auth.ts          승인된 교사 계정 검사
+db/migrations/               운영 PostgreSQL 스키마의 기준
+db/repository.ts             소유권·참여 토큰·상태 전이를 포함한 SQL
+db/connection.ts             서버 전용 Neon 연결 (로컬 fallback 없음)
+data/                        성취기준 데이터와 PDF 추출 보고서
+scripts/                     성취기준 추출·운영 마이그레이션
+tests/                       영구 저장·격리·동시성·공개·HTTP 검증
+docs/OPERATING_STATUS.md     증거가 있는 완료 항목과 미완료 항목
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+운영 전 필수: 요청/AI 비용 제한, 학생 참여 복구·공용 기기 전환, 개인정보 보존/삭제·백업 복원 절차, 파일 저장/AI 채점, 실제 로그인부터 결과 공개까지의 전체 흐름 검증.
