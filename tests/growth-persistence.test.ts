@@ -4,12 +4,13 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { createGrowthRepository } from "../db/growth-repository";
 import { createAssessmentRepository, type Query } from "../db/repository";
-import { AppError } from "../lib/assessment-domain";
+import { AppError, type AssessmentDefinition } from "../lib/assessment-domain";
 import { validateRubric, validateTerm, validateUnit } from "../lib/growth-domain";
 
 const coreSchema = await readFile(new URL("../db/migrations/0001_assessment_core.sql", import.meta.url), "utf8");
 const growthSchema = await readFile(new URL("../db/migrations/0002_curriculum_growth.sql", import.meta.url), "utf8");
 const aiSchema = await readFile(new URL("../db/migrations/0003_ai_assessment_suggestions.sql", import.meta.url), "utf8");
+const bridgeSchema = await readFile(new URL("../db/migrations/0004_assessment_growth_bridge.sql", import.meta.url), "utf8");
 let pg: PGlite;
 let repo: ReturnType<typeof createGrowthRepository>;
 let assessmentRepo: ReturnType<typeof createAssessmentRepository>;
@@ -22,6 +23,7 @@ before(async () => {
   await pg.exec(coreSchema);
   await pg.exec(growthSchema);
   await pg.exec(aiSchema);
+  await pg.exec(bridgeSchema);
   repo = createGrowthRepository(adapter(pg));
   assessmentRepo = createAssessmentRepository(adapter(pg));
 });
@@ -108,6 +110,50 @@ test("교육과정 문항 AI 생성 요청·성공·실패·중복 재사용 이
   assert.equal((restored.output as { questions: unknown[] }).questions.length, 1);
   assert.deepEqual(await assessmentRepo.listQuestionGenerations("other-teacher", 10), []);
   await assert.rejects(assessmentRepo.getQuestionGeneration(completed.id, "other-teacher"), status(404));
+});
+
+test("단원 QR 평가 제출을 등록 학생의 원본 성장 증거로 자동 수합", async () => {
+  const { owner, term, unit, standard, criterion, student } = await createBase();
+  const definition: AssessmentDefinition = {
+    title: "민주주의 단원 독립 수행", subject: "6학년 사회",
+    learningGoal: "선거와 시민 주권의 관계를 새로운 사례에서 근거와 함께 설명한다.",
+    type: "독립 수행평가", standardCodes: [standard.code], methods: ["text"],
+    questions: [{ id: "q1", prompt: "학급 대표 선거가 학생의 의견을 반영하는 과정인 까닭을 설명하세요.", kind: "서술형", standardCode: standard.code, criterion: "개념과 원리", rubricCriterionId: criterion.id, points: 20 }],
+    rubric: [{ name: "개념과 원리", standardCode: standard.code, rubricCriterionId: criterion.id, high: rubricDefinition.criteria[0].high, middle: rubricDefinition.criteria[0].middle, low: rubricDefinition.criteria[0].low }],
+    grading: { upperThreshold: 80, middleThreshold: 50 },
+  };
+  const assessment = await assessmentRepo.create(owner, {
+    definition, curriculumLink: { unitId: unit.id, eventType: "initial", context: "새로운 선거 사례에서 시민의 선택과 대표 권한의 관계를 독립적으로 설명한다.", occurredAt: now() },
+  });
+  assert.equal(assessment.curriculumLink?.termId, term.id);
+  assert.equal(assessment.curriculumLink?.unitId, unit.id);
+  assert.equal(assessment.curriculumLink?.unitTitle, unit.title);
+  await assessmentRepo.setStatus(assessment.id, owner, "published");
+  await assert.rejects(assessmentRepo.startAttempt(assessment.shareCode, "등록되지-않음"), status(409));
+  const started = await assessmentRepo.startAttempt(assessment.shareCode, student.studentRef);
+  assert.equal(started.attempt.curriculumStudentId, student.id);
+  assert.equal(started.attempt.studentLabel, student.displayName);
+  await assert.rejects(assessmentRepo.startAttempt(assessment.shareCode, student.studentRef), status(409));
+  const submitted = await assessmentRepo.saveAttempt(assessment.shareCode, started.token, {
+    answers: { q1: "학생들이 투표로 대표를 선택하므로 대표의 권한은 학생들의 선택에서 나옵니다." },
+    revision: 0, timeSpentSeconds: 95, submit: true,
+  });
+  assert.equal(submitted.status, "submitted");
+  const evidenceRows = (await pg.query<{ id: string; attempt_id: string; original_text: string }>("SELECT id, attempt_id, original_text FROM learning_evidence WHERE attempt_id = $1", [started.attempt.id])).rows;
+  assert.equal(evidenceRows.length, 1);
+  const original = JSON.parse(evidenceRows[0].original_text) as { format: string; answers: { standardCode: string; answer: string }[] };
+  assert.equal(original.format, "mumu.text.answers.v1");
+  assert.equal(original.answers[0].standardCode, standard.code);
+  assert.match(original.answers[0].answer, /대표의 권한/);
+  const retried = await assessmentRepo.saveAttempt(assessment.shareCode, started.token, { answers: { q1: "바꾼 답" }, revision: 0, timeSpentSeconds: 95, submit: true });
+  assert.equal(retried.id, submitted.id);
+  assert.equal((await pg.query<{ count: number }>("SELECT count(*)::int AS count FROM learning_evidence WHERE attempt_id = $1", [started.attempt.id])).rows[0].count, 1);
+  const workflow = await repo.getWorkflow(term.id, owner);
+  const imported = workflow.evidence.find(item => item.attemptId === started.attempt.id);
+  assert.equal(imported?.studentId, student.id);
+  assert.equal(imported?.eventType, "initial");
+  assert.equal(imported?.assistanceLevel, "independent");
+  assert.equal((await pg.query<{ count: number }>("SELECT count(*)::int AS count FROM curriculum_audit_events WHERE owner_id = $1 AND event_type IN ('assessment.linked', 'evidence.imported')", [owner])).rows[0].count, 2);
 });
 
 test("학기→단원→루브릭→증거→피드백→추가 학습→재평가→학기말 판단 전체 흐름", async () => {

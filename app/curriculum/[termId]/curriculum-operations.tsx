@@ -25,6 +25,14 @@ const feedbackStatus = {
   ready_for_reassessment: "독립 재평가 필요",
   completed: "성장 확인 완료",
 };
+type ImportedTextAnswers = { format: "mumu.text.answers.v1"; assessmentTitle: string; answers: { questionId: string; standardCode: string; criterion: string; prompt: string; answer: string }[] };
+function importedTextAnswers(value: string | null): ImportedTextAnswers | null {
+  if (!value?.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<ImportedTextAnswers>;
+    return parsed.format === "mumu.text.answers.v1" && Array.isArray(parsed.answers) ? parsed as ImportedTextAnswers : null;
+  } catch { return null; }
+}
 
 type Tab = "evidence" | "feedback" | "semester";
 
@@ -94,10 +102,11 @@ export default function CurriculumOperations({
 
 function EvidenceCard({ item, onReview, onFeedback }: { item: WorkflowEvidenceRecord; onReview: () => void; onFeedback: () => void }) {
   const final = item.judgements.filter(judgement => judgement.state === "final");
+  const imported = importedTextAnswers(item.originalText);
   const text = item.originalText ?? item.transformedText ?? "비공개 원본 참조로 보관된 수행 증거";
   return <article className="evidence-work-card">
-    <header><div><span>{item.unitTitle} · {item.eventTitle}</span><h3>{item.studentName}</h3></div><div className="evidence-badges"><em>{modalityLabel[item.modality]}</em><em className={item.assistanceLevel === "independent" ? "independent" : "supported"}>{assistanceLabel[item.assistanceLevel]}</em></div></header>
-    <blockquote>{text}</blockquote>
+    <header><div><span>{item.unitTitle} · {item.eventTitle}</span><h3>{item.studentName}</h3></div><div className="evidence-badges">{item.attemptId ? <em className="imported">QR 자동 수합</em> : null}<em>{modalityLabel[item.modality]}</em><em className={item.assistanceLevel === "independent" ? "independent" : "supported"}>{assistanceLabel[item.assistanceLevel]}</em></div></header>
+    {imported ? <div className="evidence-answer-list"><strong>{imported.assessmentTitle}</strong>{imported.answers.map((answer, index) => <article key={answer.questionId}><small>{answer.standardCode} · {answer.criterion}</small><p><b>{index + 1}. {answer.prompt}</b></p><blockquote>{answer.answer}</blockquote></article>)}</div> : <blockquote>{text}</blockquote>}
     <div className="criterion-chip-row">{item.judgements.length ? item.judgements.map(judgement => <span key={judgement.id} className={`level-${judgement.level.replace("판단 ", "")}`}><small>{judgement.standardCode} · {judgement.criterionName}</small><strong>{judgement.level}</strong><em>{judgement.state === "final" ? "교사 확정" : "초안"}</em></span>) : <span className="judgement-empty"><strong>루브릭 판단 전</strong><small>잠긴 기준에 따라 근거를 남겨 주세요.</small></span>}</div>
     {item.aiSuggestions.length ? <div className="ai-suggestion-summary"><header><strong>AI 추천 · 교사 판단과 분리 보관</strong><small>참고 자료</small></header>{item.aiSuggestions.map(suggestion => <div key={suggestion.id}><span>{suggestion.criterionName}</span><b>{suggestion.suggestedLevel}</b><em>확신 {Math.round(suggestion.confidence * 100)}%</em><p>{suggestion.rationale}</p><small>불확실성: {suggestion.uncertainty}</small></div>)}</div> : <div className="ai-consent-note"><strong>AI 학생 증거 분석 비활성</strong><span>학교의 개인정보 처리 승인과 AI 전송 설정 후에만 사용합니다.</span></div>}
     <footer><small>{new Date(item.collectedAt).toLocaleString("ko-KR")}</small><div><button type="button" className="outline-button" onClick={onReview}>{item.judgements.length ? "판단 보완·개정" : "루브릭 판단"}</button><button type="button" className="primary-button" disabled={final.length === 0} onClick={onFeedback}>피드백 설계</button></div></footer>

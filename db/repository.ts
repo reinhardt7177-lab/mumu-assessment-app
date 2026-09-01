@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { AppError, validateAnswers, validateAssessment, validateReview, type AssessmentRecord, type AttemptRecord, type ReviewRecord } from "../lib/assessment-domain";
+import { AppError, validateAnswers, validateAssessmentCreate, validateReview, type AssessmentRecord, type AttemptRecord, type ReviewRecord } from "../lib/assessment-domain";
 
 export type Query = <T extends Record<string, unknown>>(text: string, parameters?: unknown[]) => Promise<T[]>;
 export type QuestionGenerationRecord = {
@@ -24,8 +24,11 @@ export type QuestionGenerationRecord = {
   createdAt: string;
   completedAt: string | null;
 };
-const assessmentColumns = `a.id, a.owner_id AS "ownerId", a.share_code AS "shareCode", a.definition, a.status, a.version, a.created_at AS "createdAt"`;
-const attemptColumns = `s.id, s.assessment_id AS "assessmentId", s.student_label AS "studentLabel", s.answers, s.revision, s.status, s.time_spent_seconds AS "timeSpentSeconds", s.saved_at AS "savedAt", s.submitted_at AS "submittedAt"`;
+const assessmentColumns = `a.id, a.owner_id AS "ownerId", a.share_code AS "shareCode", a.definition, a.status, a.version, a.created_at AS "createdAt",
+  (SELECT jsonb_build_object('eventId', event.id, 'termId', u.term_id, 'unitId', u.id, 'unitTitle', u.title)
+    FROM assessment_events event JOIN curriculum_units u ON u.id = event.unit_id
+    WHERE event.assessment_id = a.id LIMIT 1) AS "curriculumLink"`;
+const attemptColumns = `s.id, s.assessment_id AS "assessmentId", s.curriculum_student_id AS "curriculumStudentId", s.student_label AS "studentLabel", s.answers, s.revision, s.status, s.time_spent_seconds AS "timeSpentSeconds", s.saved_at AS "savedAt", s.submitted_at AS "submittedAt"`;
 const questionGenerationColumns = `id, owner_id AS "ownerId", model, prompt_version AS "promptVersion",
   input_hash AS "inputHash", title, subject, learning_goal AS "learningGoal", standards,
   requested_count AS "requestedCount", status, output, input_tokens AS "inputTokens",
@@ -33,7 +36,7 @@ const questionGenerationColumns = `id, owner_id AS "ownerId", model, prompt_vers
   error_code AS "errorCode", error_message AS "errorMessage", created_at AS "createdAt",
   completed_at AS "completedAt"`;
 const timestamp = (value: unknown) => value instanceof Date ? value.toISOString() : String(value);
-const assessmentRecord = (r: Record<string, unknown>) => ({ ...r, createdAt: timestamp(r.createdAt), submittedCount: Number(r.submittedCount ?? 0), pendingCount: Number(r.pendingCount ?? 0) }) as AssessmentRecord;
+const assessmentRecord = (r: Record<string, unknown>) => ({ ...r, curriculumLink: r.curriculumLink ?? null, createdAt: timestamp(r.createdAt), submittedCount: Number(r.submittedCount ?? 0), pendingCount: Number(r.pendingCount ?? 0) }) as AssessmentRecord;
 const attemptRecord = (r: Record<string, unknown>) => ({ ...r, savedAt: timestamp(r.savedAt), submittedAt: r.submittedAt ? timestamp(r.submittedAt) : null }) as AttemptRecord;
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const nullableNumber = (value: unknown) => value === null || value === undefined ? null : Number(value);
@@ -158,28 +161,78 @@ export function createAssessmentRepository(query: Query) {
     },
     async create(ownerId: string, input: unknown) {
       if (!ownerId) throw new AppError(401, "교사 로그인이 필요합니다.");
-      const definition = validateAssessment(input);
-      const rows = await query(`INSERT INTO assessments AS a (id, owner_id, share_code, definition) VALUES ($1, $2, $3, $4::jsonb) RETURNING ${assessmentColumns}`, [randomUUID(), ownerId, randomBytes(8).toString("hex").toUpperCase(), JSON.stringify(definition)]);
-      return assessmentRecord(rows[0]);
+      const { definition, curriculumLink } = validateAssessmentCreate(input);
+      const id = randomUUID();
+      const shareCode = randomBytes(8).toString("hex").toUpperCase();
+      if (!curriculumLink) {
+        await query(`INSERT INTO assessments (id, owner_id, share_code, definition) VALUES ($1, $2, $3, $4::jsonb)`, [id, ownerId, shareCode, JSON.stringify(definition)]);
+        return getOwned(id, ownerId);
+      }
+      const rows = await query(`WITH authorized AS (
+        SELECT u.id FROM curriculum_units u
+        JOIN curriculum_terms t ON t.id = u.term_id
+        WHERE u.id = $5 AND t.owner_id = $2 AND t.status <> 'closed'
+          AND concat(t.grade, '학년 ', t.subject) = $6
+          AND (SELECT count(*) FROM unit_standards us
+            WHERE us.unit_id = u.id AND us.standard_code IN (SELECT jsonb_array_elements_text($7::jsonb))) = $8
+          AND NOT EXISTS (
+            SELECT 1 FROM unit_standards us
+            WHERE us.unit_id = u.id AND us.standard_code IN (SELECT jsonb_array_elements_text($7::jsonb))
+              AND NOT EXISTS (SELECT 1 FROM rubric_versions rv WHERE rv.unit_standard_id = us.id AND rv.state = 'locked')
+          )
+      ), inserted_assessment AS (
+        INSERT INTO assessments (id, owner_id, share_code, definition)
+        SELECT $1, $2, $3, $4::jsonb FROM authorized RETURNING id
+      ), inserted_event AS (
+        INSERT INTO assessment_events (id, unit_id, assessment_id, event_type, title, context, occurred_at, created_by)
+        SELECT $9, authorized.id, inserted_assessment.id, $10, $11, $12, $13::timestamptz, $2
+        FROM authorized CROSS JOIN inserted_assessment RETURNING id
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $14, $2, $2, 'assessment.linked', 'assessment_event', id,
+          jsonb_build_object('assessmentId', $1::uuid, 'unitId', $5::uuid, 'standardCount', $8::int)
+        FROM inserted_event
+      ) SELECT id FROM inserted_assessment`, [
+        id, ownerId, shareCode, JSON.stringify(definition), curriculumLink.unitId, definition.subject,
+        JSON.stringify(definition.standardCodes), definition.standardCodes.length, randomUUID(),
+        curriculumLink.eventType, definition.title, curriculumLink.context, curriculumLink.occurredAt, randomUUID(),
+      ]);
+      if (!rows[0]) throw new AppError(409, "선택한 단원·성취기준과 잠긴 루브릭 연결을 확인해 주세요.");
+      return getOwned(id, ownerId);
     },
     async setStatus(id: string, ownerId: string, status: "published" | "closed") {
       const assessment = await getOwned(id, ownerId);
       if (assessment.status === status) return assessment;
       if (status === "published" && assessment.definition.methods.some(m => m !== "text")) throw new AppError(409, "사진·녹음·대화 저장 연결 전에는 글쓰기 평가만 배포할 수 있습니다.");
       const from = status === "published" ? "draft" : "published";
-      const rows = await query(`UPDATE assessments AS a SET status = $3, published_at = CASE WHEN $3 = 'published' THEN now() ELSE published_at END, closed_at = CASE WHEN $3 = 'closed' THEN now() ELSE NULL END WHERE a.id = $1 AND a.owner_id = $2 AND a.status = $4 RETURNING ${assessmentColumns}`, [id, ownerId, status, from]);
+      const rows = await query(`UPDATE assessments AS a SET status = $3, published_at = CASE WHEN $3 = 'published' THEN now() ELSE published_at END, closed_at = CASE WHEN $3 = 'closed' THEN now() ELSE NULL END WHERE a.id = $1 AND a.owner_id = $2 AND a.status = $4 RETURNING a.id`, [id, ownerId, status, from]);
       if (!rows[0]) throw new AppError(409, "평가 상태가 변경되었습니다. 새로고침해 주세요. 마감한 평가는 다시 열 수 없습니다.");
-      return assessmentRecord(rows[0]);
+      return getOwned(id, ownerId);
     },
     async startAttempt(code: string, studentLabel: string) {
       const label = studentLabel.trim();
       if (!label || label.length > 40) throw new AppError(400, "번호 또는 별칭을 1~40자로 입력해 주세요.");
       const token = randomBytes(32).toString("base64url");
-      // The published check and insertion share one database statement.
-      const rows = await query(`INSERT INTO student_attempts AS s (id, assessment_id, student_label, token_hash)
-        SELECT $1, a.id, $3, $4 FROM assessments a WHERE a.share_code = $2 AND a.status = 'published'
-        RETURNING ${attemptColumns}`, [randomUUID(), code, label, hashToken(token)]);
-      if (!rows[0]) throw new AppError(409, "평가가 마감되었거나 아직 공개되지 않았습니다.");
+      const rows = await query(`WITH target AS (
+        SELECT a.id AS assessment_id, event.id AS event_id, u.term_id
+        FROM assessments a
+        LEFT JOIN assessment_events event ON event.assessment_id = a.id
+        LEFT JOIN curriculum_units u ON u.id = event.unit_id
+        WHERE a.share_code = $2 AND a.status = 'published'
+      ), resolved AS (
+        SELECT target.assessment_id, student.id AS curriculum_student_id,
+          CASE WHEN target.term_id IS NULL THEN $3 ELSE student.display_name END AS student_label
+        FROM target
+        LEFT JOIN curriculum_students student ON student.term_id = target.term_id
+          AND student.student_ref = $3 AND student.active = true
+        WHERE target.term_id IS NULL OR student.id IS NOT NULL
+      ), inserted AS (
+        INSERT INTO student_attempts AS s (id, assessment_id, curriculum_student_id, student_label, token_hash)
+        SELECT $1, assessment_id, curriculum_student_id, student_label, $4 FROM resolved
+        ON CONFLICT (assessment_id, curriculum_student_id) WHERE curriculum_student_id IS NOT NULL DO NOTHING
+        RETURNING s.*
+      ) SELECT ${attemptColumns} FROM inserted s`, [randomUUID(), code, label, hashToken(token)]);
+      if (!rows[0]) throw new AppError(409, "평가 상태, 학생 참조 번호 또는 이미 시작한 참여 기록을 확인해 주세요.");
       return { token, attempt: attemptRecord(rows[0]) };
     },
     async saveAttempt(code: string, token: string, input: { answers: unknown; revision: number; timeSpentSeconds: number; submit?: boolean }) {
@@ -189,11 +242,49 @@ export function createAssessmentRepository(query: Query) {
       if (existing.status === "submitted") throw new AppError(409, "이미 제출한 답안은 수정할 수 없습니다.");
       if (!Number.isInteger(input.revision) || !Number.isInteger(input.timeSpentSeconds) || input.timeSpentSeconds < 0 || input.timeSpentSeconds > 86400) throw new AppError(400, "저장 정보가 올바르지 않습니다.");
       const answers = validateAnswers(input.answers, assessment.definition, Boolean(input.submit));
-      const rows = await query(`UPDATE student_attempts AS s SET answers = $3::jsonb, revision = s.revision + 1, saved_at = now(),
-        time_spent_seconds = GREATEST(s.time_spent_seconds, $5), status = $6, submitted_at = CASE WHEN $6 = 'submitted' THEN now() ELSE NULL END
+      const rows = await query(`WITH saved AS (
+        UPDATE student_attempts AS s SET answers = $3::jsonb, revision = s.revision + 1, saved_at = now(),
+          time_spent_seconds = GREATEST(s.time_spent_seconds, $5), status = $6,
+          submitted_at = CASE WHEN $6 = 'submitted' THEN now() ELSE NULL END
         FROM assessments a WHERE s.assessment_id = a.id AND a.share_code = $1 AND s.token_hash = $2
-        AND a.status = 'published' AND s.status = 'in_progress' AND s.revision = $4 RETURNING ${attemptColumns}`,
-      [code, hashToken(token), JSON.stringify(answers), input.revision, input.timeSpentSeconds, input.submit ? "submitted" : "in_progress"]);
+          AND a.status = 'published' AND s.status = 'in_progress' AND s.revision = $4
+        RETURNING s.*
+      ), linked AS (
+        SELECT s.*, a.owner_id, a.definition, event.id AS event_id
+        FROM saved s JOIN assessments a ON a.id = s.assessment_id
+        LEFT JOIN assessment_events event ON event.assessment_id = a.id
+      ), evidence AS (
+        INSERT INTO learning_evidence (
+          id, student_id, event_id, attempt_id, modality, source_kind, assistance_level,
+          original_text, transformation_status, teacher_verified, collected_at, created_by
+        )
+        SELECT $7, linked.curriculum_student_id, linked.event_id, linked.id, 'text', 'student_response',
+          CASE WHEN linked.definition->>'type' = '독립 수행평가' THEN 'independent' ELSE 'scaffolded' END,
+          jsonb_build_object(
+            'format', 'mumu.text.answers.v1', 'assessmentId', linked.assessment_id,
+            'assessmentTitle', linked.definition->>'title',
+            'answers', (
+              SELECT coalesce(jsonb_agg(jsonb_build_object(
+                'questionId', question->>'id', 'standardCode', question->>'standardCode',
+                'criterion', question->>'criterion', 'prompt', question->>'prompt',
+                'answer', linked.answers->>(question->>'id')
+              ) ORDER BY ordinality), '[]'::jsonb)
+              FROM jsonb_array_elements(linked.definition->'questions') WITH ORDINALITY AS item(question, ordinality)
+            )
+          )::text, 'original', false, linked.submitted_at, linked.owner_id
+        FROM linked
+        WHERE linked.status = 'submitted' AND linked.curriculum_student_id IS NOT NULL AND linked.event_id IS NOT NULL
+        ON CONFLICT (attempt_id) WHERE attempt_id IS NOT NULL DO NOTHING
+        RETURNING id, student_id, event_id, attempt_id, assistance_level
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $8, linked.owner_id, linked.owner_id, 'evidence.imported', 'learning_evidence', evidence.id,
+          jsonb_build_object('attemptId', evidence.attempt_id, 'studentId', evidence.student_id,
+            'eventId', evidence.event_id, 'assistanceLevel', evidence.assistance_level)
+        FROM evidence JOIN linked ON linked.id = evidence.attempt_id
+      ) SELECT ${attemptColumns} FROM saved s`,
+      [code, hashToken(token), JSON.stringify(answers), input.revision, input.timeSpentSeconds,
+        input.submit ? "submitted" : "in_progress", randomUUID(), randomUUID()]);
       if (!rows[0]) {
         const latest = await getAttempt(code, token);
         if (input.submit && latest.status === "submitted") return latest;

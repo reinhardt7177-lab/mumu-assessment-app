@@ -11,6 +11,7 @@ export const questionSchema = z.object({
   kind: z.enum(["서술형", "선택형", "말하기"]),
   standardCode: z.string().min(4).max(30),
   criterion: z.string().trim().min(1).max(80),
+  rubricCriterionId: z.string().uuid().optional(),
   points: z.number().int().min(1).max(100),
 });
 
@@ -24,6 +25,8 @@ export const assessmentSchema = z.object({
   methods: z.array(z.enum(["text", "photo", "speech", "chat"])).min(1).max(4),
   rubric: z.array(z.object({
     name: z.string().trim().min(1).max(80),
+    standardCode: z.string().min(4).max(30).optional(),
+    rubricCriterionId: z.string().uuid().optional(),
     high: z.string().trim().min(5).max(500),
     middle: z.string().trim().min(5).max(500),
     low: z.string().trim().min(5).max(500),
@@ -35,16 +38,26 @@ export const assessmentSchema = z.object({
 });
 
 export type AssessmentDefinition = z.infer<typeof assessmentSchema>;
+export const curriculumAssessmentLinkSchema = z.object({
+  unitId: z.string().uuid(),
+  eventType: z.enum(["initial", "formative", "reassessment"]),
+  context: z.string().trim().min(5).max(3000),
+  occurredAt: z.string().datetime(),
+});
+export type CurriculumAssessmentLinkInput = z.infer<typeof curriculumAssessmentLinkSchema>;
+export type AssessmentCreateInput = { definition: AssessmentDefinition; curriculumLink: CurriculumAssessmentLinkInput | null };
 export type AssessmentQuestion = z.infer<typeof questionSchema>;
 export type AssessmentRecord = {
   id: string; ownerId: string; shareCode: string; status: "draft" | "published" | "closed";
   definition: AssessmentDefinition; version: number; createdAt: string;
+  curriculumLink: { eventId: string; termId: string; unitId: string; unitTitle: string } | null;
   submittedCount: number; pendingCount: number;
 };
 export type Answers = Record<string, string>;
 export type AttemptRecord = {
   id: string; assessmentId: string; studentLabel: string; answers: Answers;
   revision: number; status: "in_progress" | "submitted"; timeSpentSeconds: number;
+  curriculumStudentId: string | null;
   savedAt: string; submittedAt: string | null;
 };
 export type ReviewRecord = {
@@ -65,11 +78,23 @@ export function validateAssessment(input: unknown): AssessmentDefinition {
     throw new AppError(400, "선택한 초등 학년군·교과에 맞는 성취기준을 선택해 주세요.");
   }
   if (new Set(value.questions.map(q => q.id)).size !== value.questions.length) throw new AppError(400, "문항 번호가 중복되었습니다.");
-  if (new Set(value.rubric.map(r => r.name)).size !== value.rubric.length) throw new AppError(400, "루브릭 기준 이름이 중복되었습니다.");
-  if (value.questions.some(q => !value.standardCodes.includes(q.standardCode) || !value.rubric.some(r => r.name === q.criterion))) {
+  const rubricKeys = value.rubric.map(r => r.rubricCriterionId ?? `${r.standardCode ?? "*"}:${r.name}`);
+  if (new Set(rubricKeys).size !== rubricKeys.length) throw new AppError(400, "루브릭 기준 연결이 중복되었습니다.");
+  if (value.rubric.some(r => r.standardCode && !value.standardCodes.includes(r.standardCode))) throw new AppError(400, "루브릭의 성취기준 연결을 확인해 주세요.");
+  if (value.questions.some(q => !value.standardCodes.includes(q.standardCode) || !value.rubric.some(r =>
+    q.rubricCriterionId ? r.rubricCriterionId === q.rubricCriterionId && (!r.standardCode || r.standardCode === q.standardCode) : r.name === q.criterion && (!r.standardCode || r.standardCode === q.standardCode)))) {
     throw new AppError(400, "모든 문항에 성취기준과 루브릭 기준을 연결해 주세요.");
   }
   return value;
+}
+
+export function validateAssessmentCreate(input: unknown): AssessmentCreateInput {
+  if (input && typeof input === "object" && "definition" in input) {
+    const parsed = z.object({ definition: z.unknown(), curriculumLink: curriculumAssessmentLinkSchema.nullable().optional() }).strict().safeParse(input);
+    if (!parsed.success) throw new AppError(400, "평가와 단원 연결 정보를 확인해 주세요.");
+    return { definition: validateAssessment(parsed.data.definition), curriculumLink: parsed.data.curriculumLink ?? null };
+  }
+  return { definition: validateAssessment(input), curriculumLink: null };
 }
 
 export function validateAnswers(input: unknown, definition: AssessmentDefinition, complete = false): Answers {

@@ -1,19 +1,23 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { CurriculumDashboardRecord, CurriculumWorkflowRecord, RubricCriterionRecord } from "../../../db/growth-repository";
 import { requestJson } from "../../../lib/client-api";
 import AchievementStandardPicker, { type AchievementStandard } from "../../achievement-standard-picker";
+import AssessmentCreator, { type CurriculumAssessmentContext } from "../../assessment-creator";
 import CurriculumOperations from "./curriculum-operations";
 
 const unitStatus = { planned: "수업 예정", teaching: "수업 중", assessing: "평가 중", feedback: "피드백", completed: "완료" };
 const rubricStatus = { draft: "검토 중", locked: "평가 사용 가능", retired: "이전 버전" };
 
 export default function CurriculumTermDashboard({ initialDashboard, initialWorkflow }: { initialDashboard: CurriculumDashboardRecord; initialWorkflow: CurriculumWorkflowRecord }) {
+  const router = useRouter();
   const [dashboard, setDashboard] = useState(initialDashboard);
   const [workflow, setWorkflow] = useState(initialWorkflow);
   const [creatingUnit, setCreatingUnit] = useState(false);
   const [creatingStudent, setCreatingStudent] = useState(false);
+  const [assessmentUnitId, setAssessmentUnitId] = useState<string | null>(null);
   const [rubricStandard, setRubricStandard] = useState<{ id: string; code: string; content: string } | null>(null);
   const [busyRubric, setBusyRubric] = useState("");
   const [error, setError] = useState("");
@@ -31,6 +35,20 @@ export default function CurriculumTermDashboard({ initialDashboard, initialWorkf
     finally { setBusyRubric(""); }
   };
   const term = dashboard.term;
+  const assessmentUnit = dashboard.units.find(unit => unit.id === assessmentUnitId);
+  const assessmentRubrics = workflow.rubrics.filter(rubric => rubric.unitId === assessmentUnitId && rubric.state === "locked");
+  const lockedStandardCodes = new Set(assessmentRubrics.map(rubric => rubric.standardCode));
+  const assessmentContext: CurriculumAssessmentContext | null = assessmentUnit && assessmentRubrics.length ? {
+    termId: term.id, unitId: assessmentUnit.id, unitTitle: assessmentUnit.title, subject: `${term.grade}학년 ${term.subject}`,
+    standards: assessmentUnit.standards.filter(standard => lockedStandardCodes.has(standard.code)).map(standard => ({
+      code: standard.code, content: standard.content, domain: standard.domain, subject: term.subject,
+      schoolLevel: "초등학교", gradeBand: term.grade <= 2 ? "1~2학년" : term.grade <= 4 ? "3~4학년" : "5~6학년", curriculumYear: 2022,
+    })),
+    rubric: assessmentRubrics.flatMap(rubric => rubric.criteria.map(criterion => ({
+      name: criterion.name, standardCode: rubric.standardCode, rubricCriterionId: criterion.id,
+      high: criterion.high, middle: criterion.middle, low: criterion.low,
+    }))),
+  } : null;
 
   return <div className="curriculum-real curriculum-board">
     <section className="curriculum-board-heading">
@@ -58,6 +76,7 @@ export default function CurriculumTermDashboard({ initialDashboard, initialWorkf
                 {standard.rubric ? <div className="rubric-live-state"><strong>루브릭 v{standard.rubric.version} · {rubricStatus[standard.rubric.state]}</strong><small>{standard.rubric.criterionCount}개 평가 요소</small>{standard.rubric.state === "draft" ? <button type="button" disabled={busyRubric === standard.rubric.id} onClick={() => void lockRubric(standard.rubric!.id)}>{busyRubric === standard.rubric.id ? "확정 중…" : "검토 완료·잠금"}</button> : null}</div> : <button type="button" className="rubric-design-button" onClick={() => setRubricStandard({ id: standard.id, code: standard.code, content: standard.content })}>＋ 준거 루브릭 설계</button>}
               </div>)}
             </div>
+            <footer className="unit-assessment-action"><div><strong>학생용 단원 평가</strong><small>QR 제출 → 원본 성장 증거 자동 수합</small></div><button type="button" className="outline-button" disabled={!workflow.rubrics.some(rubric => rubric.unitId === unit.id && rubric.state === "locked")} onClick={() => setAssessmentUnitId(unit.id)}>{workflow.rubrics.some(rubric => rubric.unitId === unit.id && rubric.state === "locked") ? "＋ 이 단원 평가 만들기" : "루브릭 잠금 후 생성"}</button></footer>
           </article>)}
         </div>}
       </section>
@@ -76,6 +95,7 @@ export default function CurriculumTermDashboard({ initialDashboard, initialWorkf
     {creatingUnit ? <UnitCreator dashboard={dashboard} onClose={() => setCreatingUnit(false)} onSaved={async () => { setCreatingUnit(false); await refresh(); }} /> : null}
     {creatingStudent ? <StudentCreator termId={term.id} onClose={() => setCreatingStudent(false)} onSaved={async () => { setCreatingStudent(false); await refresh(); }} /> : null}
     {rubricStandard ? <RubricBuilder standard={rubricStandard} onClose={() => setRubricStandard(null)} onSaved={async () => { setRubricStandard(null); await refresh(); }} /> : null}
+    {assessmentContext ? <AssessmentCreator curriculumContext={assessmentContext} onClose={() => setAssessmentUnitId(null)} onCreated={assessment => { setAssessmentUnitId(null); router.push(`/assessments/${assessment.id}`); }} /> : null}
   </div>;
 }
 
