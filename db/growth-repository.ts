@@ -197,6 +197,46 @@ export type CurriculumDashboardRecord = {
   };
 };
 
+export type WorkflowRubricRecord = RubricRecord & {
+  unitId: string;
+  unitTitle: string;
+  standardCode: string;
+  standardContent: string;
+};
+
+export type WorkflowEvidenceRecord = EvidenceRecord & {
+  studentName: string;
+  unitId: string;
+  unitTitle: string;
+  eventTitle: string;
+  eventContext: string;
+  eventType: AssessmentEventRecord["eventType"];
+  judgements: Array<CriterionJudgementRecord & {
+    criterionName: string;
+    unitStandardId: string;
+    standardCode: string;
+  }>;
+};
+
+export type WorkflowFeedbackRecord = FeedbackRecord & {
+  studentName: string;
+  unitId: string;
+  unitTitle: string;
+  standardCode: string;
+  standardContent: string;
+  basisJudgementIds: string[];
+  interventions: InterventionRecord[];
+  reassessments: ReassessmentRecord[];
+};
+
+export type CurriculumWorkflowRecord = {
+  events: Array<AssessmentEventRecord & { unitTitle: string }>;
+  rubrics: WorkflowRubricRecord[];
+  evidence: WorkflowEvidenceRecord[];
+  feedback: WorkflowFeedbackRecord[];
+  semesterJudgements: Array<SemesterJudgementRecord & { studentName: string }>;
+};
+
 const termColumns = `t.id, t.owner_id AS "ownerId", t.school_year AS "schoolYear", t.semester, t.grade, t.class_name AS "className", t.subject, t.status, t.created_at AS "createdAt"`;
 const termRecord = (row: Record<string, unknown>) => ({
   ...row,
@@ -679,6 +719,121 @@ export function createGrowthRepository(query: Query) {
       ]);
       if (!rows[0]) throw new AppError(404, "학기·학생·성취기준 연결을 찾을 수 없거나 학기가 마감되었습니다.");
       return { ...rows[0], revision: number(rows[0].revision), createdAt: timestamp(rows[0].createdAt), evidence: evidenceLinks } as SemesterJudgementRecord;
+    },
+
+    async getWorkflow(termId: string, ownerId: string) {
+      await getOwnedTerm(termId, ownerId);
+      const [events, rubrics, evidence, feedback, semesterJudgements] = await Promise.all([
+        query(`SELECT event.id, event.unit_id AS "unitId", event.assessment_id AS "assessmentId",
+          event.event_type AS "eventType", event.title, event.context,
+          event.occurred_at AS "occurredAt", event.created_at AS "createdAt", u.title AS "unitTitle"
+          FROM assessment_events event
+          JOIN curriculum_units u ON u.id = event.unit_id
+          JOIN curriculum_terms t ON t.id = u.term_id
+          WHERE t.id = $1 AND t.owner_id = $2
+          ORDER BY event.occurred_at DESC, event.created_at DESC`, [termId, ownerId]),
+        query(`SELECT
+          rv.id, rv.unit_standard_id AS "unitStandardId", rv.version, rv.state,
+          rv.created_at AS "createdAt", u.id AS "unitId", u.title AS "unitTitle",
+          us.standard_code AS "standardCode", us.standard_content AS "standardContent",
+          coalesce((
+            SELECT jsonb_agg(jsonb_build_object(
+              'id', c.id, 'key', c.criterion_key, 'name', c.name, 'description', c.description,
+              'high', c.high_descriptor, 'middle', c.middle_descriptor, 'low', c.low_descriptor,
+              'position', c.position
+            ) ORDER BY c.position)
+            FROM rubric_criteria c WHERE c.rubric_version_id = rv.id
+          ), '[]') AS criteria
+          FROM rubric_versions rv
+          JOIN unit_standards us ON us.id = rv.unit_standard_id
+          JOIN curriculum_units u ON u.id = us.unit_id
+          JOIN curriculum_terms t ON t.id = u.term_id
+          WHERE t.id = $1 AND t.owner_id = $2
+          ORDER BY us.id, rv.version DESC`, [termId, ownerId]),
+        query(`SELECT e.id, e.student_id AS "studentId", e.event_id AS "eventId", e.attempt_id AS "attemptId",
+          e.modality, e.source_kind AS "sourceKind", e.assistance_level AS "assistanceLevel",
+          e.original_text AS "originalText", e.source_ref AS "sourceRef", e.transformed_text AS "transformedText",
+          e.transformation_status AS "transformationStatus", e.teacher_verified AS "teacherVerified",
+          e.collected_at AS "collectedAt", e.created_at AS "createdAt", e.supersedes_id AS "supersedesId",
+          s.display_name AS "studentName", u.id AS "unitId", u.title AS "unitTitle",
+          event.title AS "eventTitle", event.context AS "eventContext", event.event_type AS "eventType",
+          coalesce((
+            SELECT jsonb_agg(jsonb_build_object(
+              'id', latest.id, 'evidenceId', latest.evidence_id,
+              'rubricCriterionId', latest.rubric_criterion_id, 'criterionName', latest.criterion_name,
+              'unitStandardId', latest.unit_standard_id, 'standardCode', latest.standard_code,
+              'level', latest.level, 'evidenceExcerpt', latest.evidence_excerpt,
+              'rationale', latest.rationale, 'state', latest.state, 'revision', latest.revision,
+              'supersedesId', latest.supersedes_id, 'createdAt', latest.created_at
+            ) ORDER BY latest.standard_code, latest.criterion_position)
+            FROM (
+              SELECT DISTINCT ON (j.rubric_criterion_id)
+                j.id, j.evidence_id, j.rubric_criterion_id, c.name AS criterion_name,
+                us.id AS unit_standard_id, us.standard_code, c.position AS criterion_position,
+                j.level, j.evidence_excerpt, j.rationale, j.state, j.revision,
+                j.supersedes_id, j.created_at
+              FROM criterion_judgements j
+              JOIN rubric_criteria c ON c.id = j.rubric_criterion_id
+              JOIN rubric_versions rv ON rv.id = c.rubric_version_id
+              JOIN unit_standards us ON us.id = rv.unit_standard_id
+              WHERE j.evidence_id = e.id
+              ORDER BY j.rubric_criterion_id, j.revision DESC, j.created_at DESC
+            ) latest
+          ), '[]') AS judgements
+          FROM learning_evidence e
+          JOIN curriculum_students s ON s.id = e.student_id
+          JOIN curriculum_terms t ON t.id = s.term_id
+          JOIN assessment_events event ON event.id = e.event_id
+          JOIN curriculum_units u ON u.id = event.unit_id AND u.term_id = t.id
+          WHERE t.id = $1 AND t.owner_id = $2
+          ORDER BY e.collected_at DESC, e.created_at DESC`, [termId, ownerId]),
+        query(`SELECT f.id, f.student_id AS "studentId", f.unit_standard_id AS "unitStandardId",
+          f.strength, f.gap_type AS "gapType", f.gap_description AS "gapDescription",
+          f.next_learning AS "nextLearning", f.status, f.created_at AS "createdAt",
+          s.display_name AS "studentName", u.id AS "unitId", u.title AS "unitTitle",
+          us.standard_code AS "standardCode", us.standard_content AS "standardContent",
+          coalesce((SELECT jsonb_agg(fb.judgement_id ORDER BY fb.judgement_id) FROM feedback_basis fb WHERE fb.cycle_id = f.id), '[]') AS "basisJudgementIds",
+          coalesce((SELECT jsonb_agg(jsonb_build_object(
+            'id', i.id, 'cycleId', i.cycle_id, 'activity', i.activity,
+            'supportLevel', i.support_level, 'teacherNote', i.teacher_note,
+            'occurredAt', i.occurred_at, 'createdAt', i.created_at
+          ) ORDER BY i.occurred_at) FROM learning_interventions i WHERE i.cycle_id = f.id), '[]') AS interventions,
+          coalesce((SELECT jsonb_agg(jsonb_build_object(
+            'id', r.id, 'cycleId', r.cycle_id, 'priorEvidenceId', r.prior_evidence_id,
+            'newEvidenceId', r.new_evidence_id, 'independent', r.independent,
+            'createdAt', r.created_at
+          ) ORDER BY r.created_at) FROM reassessment_links r WHERE r.cycle_id = f.id), '[]') AS reassessments
+          FROM feedback_cycles f
+          JOIN curriculum_students s ON s.id = f.student_id
+          JOIN curriculum_terms t ON t.id = s.term_id
+          JOIN unit_standards us ON us.id = f.unit_standard_id
+          JOIN curriculum_units u ON u.id = us.unit_id AND u.term_id = t.id
+          WHERE t.id = $1 AND t.owner_id = $2
+          ORDER BY f.created_at DESC`, [termId, ownerId]),
+        query(`SELECT latest.id, latest.term_id AS "termId", latest.student_id AS "studentId",
+          latest.standard_code AS "standardCode", latest.level, latest.rationale, latest.state,
+          latest.revision, latest.supersedes_id AS "supersedesId", latest.created_at AS "createdAt",
+          s.display_name AS "studentName",
+          coalesce((SELECT jsonb_agg(jsonb_build_object('id', link.evidence_id, 'role', link.evidence_role) ORDER BY link.evidence_role, link.evidence_id)
+            FROM semester_judgement_evidence link WHERE link.judgement_id = latest.id), '[]') AS evidence
+          FROM (
+            SELECT DISTINCT ON (j.student_id, j.standard_code) j.*
+            FROM semester_judgements j
+            WHERE j.term_id = $1
+            ORDER BY j.student_id, j.standard_code, j.revision DESC, j.created_at DESC
+          ) latest
+          JOIN curriculum_students s ON s.id = latest.student_id
+          JOIN curriculum_terms t ON t.id = latest.term_id
+          WHERE t.owner_id = $2
+          ORDER BY s.display_name, latest.standard_code`, [termId, ownerId]),
+      ]);
+      return {
+        events: events.map(row => ({ ...row, occurredAt: timestamp(row.occurredAt), createdAt: timestamp(row.createdAt) })),
+        rubrics: rubrics.map(row => ({ ...row, version: number(row.version), createdAt: timestamp(row.createdAt) })),
+        evidence: evidence.map(row => ({ ...row, collectedAt: timestamp(row.collectedAt), createdAt: timestamp(row.createdAt) })),
+        feedback: feedback.map(row => ({ ...row, createdAt: timestamp(row.createdAt) })),
+        semesterJudgements: semesterJudgements.map(row => ({ ...row, revision: number(row.revision), createdAt: timestamp(row.createdAt) })),
+      } as CurriculumWorkflowRecord;
     },
 
     async getDashboard(termId: string, ownerId: string) {

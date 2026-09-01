@@ -203,6 +203,17 @@ test("학기→단원→루브릭→증거→피드백→추가 학습→재평�
   assert.equal(dashboard.activity.finalStandardCount, 1);
   assert.equal(dashboard.students[0].evidenceCount, 3);
 
+  const workflow = await repo.getWorkflow(term.id, owner);
+  assert.equal(workflow.events.length, 3);
+  assert.equal(workflow.rubrics.length, 1);
+  assert.equal(workflow.rubrics[0].criteria[0].name, "개념과 원리");
+  assert.equal(workflow.evidence.length, 3);
+  assert.equal(workflow.evidence.find(item => item.id === independentEvidence.id)?.judgements[0].level, "상");
+  assert.equal(workflow.feedback[0].interventions.length, 1);
+  assert.equal(workflow.feedback[0].reassessments[0].independent, true);
+  assert.equal(workflow.semesterJudgements[0].evidence.length, 2);
+  await assert.rejects(repo.getWorkflow(term.id, "other-teacher"), status(404));
+
   const auditCount = (await pg.query<{ count: number }>("SELECT count(*)::int AS count FROM curriculum_audit_events WHERE owner_id = $1", [owner])).rows[0].count;
   assert.ok(auditCount >= 14);
 });

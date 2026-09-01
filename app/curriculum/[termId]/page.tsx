@@ -14,9 +14,14 @@ export default async function CurriculumTermPage({ params }: { params: Promise<{
   try { owner = await requireTeacher(); }
   catch (error) { if (error instanceof AppError) redirect("/"); throw error; }
   const { termId } = await params;
-  const dashboard = await getGrowthRepository().getDashboard(validateId(termId), owner);
+  const id = validateId(termId);
+  const repository = getGrowthRepository();
+  const [dashboard, workflow] = await Promise.all([
+    repository.getDashboard(id, owner),
+    repository.getWorkflow(id, owner),
+  ]);
   return <main className="real-workspace">
     <header className="workspace-header"><Link href="/curriculum" className="workspace-brand"><span>M</span><strong>Mumu 평가</strong></Link><nav aria-label="교사 워크스페이스"><Link className="active" href="/curriculum">교육과정 성장 평가</Link><Link href="/">평가 문항·QR</Link></nav><UserButton /></header>
-    <CurriculumTermDashboard initialDashboard={dashboard} />
+    <CurriculumTermDashboard initialDashboard={dashboard} initialWorkflow={workflow} />
   </main>;
 }

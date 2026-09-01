@@ -1,23 +1,26 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { CurriculumDashboardRecord, RubricCriterionRecord } from "../../../db/growth-repository";
+import type { CurriculumDashboardRecord, CurriculumWorkflowRecord, RubricCriterionRecord } from "../../../db/growth-repository";
 import { requestJson } from "../../../lib/client-api";
 import AchievementStandardPicker, { type AchievementStandard } from "../../achievement-standard-picker";
+import CurriculumOperations from "./curriculum-operations";
 
 const unitStatus = { planned: "수업 예정", teaching: "수업 중", assessing: "평가 중", feedback: "피드백", completed: "완료" };
 const rubricStatus = { draft: "검토 중", locked: "평가 사용 가능", retired: "이전 버전" };
 
-export default function CurriculumTermDashboard({ initialDashboard }: { initialDashboard: CurriculumDashboardRecord }) {
+export default function CurriculumTermDashboard({ initialDashboard, initialWorkflow }: { initialDashboard: CurriculumDashboardRecord; initialWorkflow: CurriculumWorkflowRecord }) {
   const [dashboard, setDashboard] = useState(initialDashboard);
+  const [workflow, setWorkflow] = useState(initialWorkflow);
   const [creatingUnit, setCreatingUnit] = useState(false);
   const [creatingStudent, setCreatingStudent] = useState(false);
   const [rubricStandard, setRubricStandard] = useState<{ id: string; code: string; content: string } | null>(null);
   const [busyRubric, setBusyRubric] = useState("");
   const [error, setError] = useState("");
   const refresh = async () => {
-    const data = await requestJson<{ dashboard: CurriculumDashboardRecord }>(`/api/teacher/curriculum/terms/${dashboard.term.id}`);
+    const data = await requestJson<{ dashboard: CurriculumDashboardRecord; workflow: CurriculumWorkflowRecord }>(`/api/teacher/curriculum/terms/${dashboard.term.id}`);
     setDashboard(data.dashboard);
+    setWorkflow(data.workflow);
   };
   const lockRubric = async (rubricId: string) => {
     setBusyRubric(rubricId); setError("");
@@ -67,6 +70,8 @@ export default function CurriculumTermDashboard({ initialDashboard }: { initialD
         <div className="semester-rule curriculum-judgement-rule"><span>학기말 종합 판단</span><strong>점수 평균으로 자동 확정하지 않습니다</strong><p>최종 교사 판단 {dashboard.activity.finalStandardCount}개 · 미완료 피드백 {dashboard.activity.openFeedbackCount}개</p></div>
       </aside>
     </div>
+
+    <CurriculumOperations dashboard={dashboard} workflow={workflow} onRefresh={refresh} />
 
     {creatingUnit ? <UnitCreator dashboard={dashboard} onClose={() => setCreatingUnit(false)} onSaved={async () => { setCreatingUnit(false); await refresh(); }} /> : null}
     {creatingStudent ? <StudentCreator termId={term.id} onClose={() => setCreatingStudent(false)} onSaved={async () => { setCreatingStudent(false); await refresh(); }} /> : null}

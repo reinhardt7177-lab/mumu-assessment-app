@@ -8,6 +8,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ ter
   try {
     const owner = await requireTeacher();
     const { termId } = await params;
-    return privateJson({ dashboard: await getGrowthRepository().getDashboard(validateId(termId), owner) });
+    const id = validateId(termId);
+    const repository = getGrowthRepository();
+    const [dashboard, workflow] = await Promise.all([
+      repository.getDashboard(id, owner),
+      repository.getWorkflow(id, owner),
+    ]);
+    return privateJson({ dashboard, workflow });
   } catch (error) { return apiError(error); }
 }
