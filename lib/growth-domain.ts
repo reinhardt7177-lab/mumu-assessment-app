@@ -80,6 +80,29 @@ export const judgementInputSchema = z.object({
   state: z.enum(["draft", "final"]),
 });
 
+export const aiSuggestionCompletionSchema = z.object({
+  suggestedLevel: curriculumLevelSchema,
+  confidence: z.number().min(0).max(1),
+  evidenceExcerpt: z.string().trim().min(1).max(3000),
+  rationale: z.string().trim().min(5).max(5000),
+  uncertainty: z.string().trim().min(1).max(3000),
+  missingEvidence: z.string().trim().min(1).max(3000),
+  constructCaution: z.string().trim().min(1).max(3000),
+  usage: z.object({
+    inputTokens: z.number().int().min(0).optional(),
+    outputTokens: z.number().int().min(0).optional(),
+    totalTokens: z.number().int().min(0).optional(),
+  }),
+  latencyMs: z.number().int().min(0),
+  providerMetadata: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const aiSuggestionFailureSchema = z.object({
+  errorCode: z.string().trim().min(1).max(80),
+  errorMessage: z.string().trim().min(1).max(500),
+  latencyMs: z.number().int().min(0),
+});
+
 export const feedbackInputSchema = z.object({
   studentId: uuid,
   unitStandardId: uuid,

@@ -2,12 +2,52 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AppError, validateAnswers, validateAssessment, validateReview, type AssessmentRecord, type AttemptRecord, type ReviewRecord } from "../lib/assessment-domain";
 
 export type Query = <T extends Record<string, unknown>>(text: string, parameters?: unknown[]) => Promise<T[]>;
+export type QuestionGenerationRecord = {
+  id: string;
+  ownerId: string;
+  model: string;
+  promptVersion: string;
+  inputHash: string;
+  title: string;
+  subject: string;
+  learningGoal: string;
+  standards: unknown[];
+  requestedCount: number;
+  status: "pending" | "complete" | "error";
+  output: unknown;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  latencyMs: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
+};
 const assessmentColumns = `a.id, a.owner_id AS "ownerId", a.share_code AS "shareCode", a.definition, a.status, a.version, a.created_at AS "createdAt"`;
 const attemptColumns = `s.id, s.assessment_id AS "assessmentId", s.student_label AS "studentLabel", s.answers, s.revision, s.status, s.time_spent_seconds AS "timeSpentSeconds", s.saved_at AS "savedAt", s.submitted_at AS "submittedAt"`;
+const questionGenerationColumns = `id, owner_id AS "ownerId", model, prompt_version AS "promptVersion",
+  input_hash AS "inputHash", title, subject, learning_goal AS "learningGoal", standards,
+  requested_count AS "requestedCount", status, output, input_tokens AS "inputTokens",
+  output_tokens AS "outputTokens", total_tokens AS "totalTokens", latency_ms AS "latencyMs",
+  error_code AS "errorCode", error_message AS "errorMessage", created_at AS "createdAt",
+  completed_at AS "completedAt"`;
 const timestamp = (value: unknown) => value instanceof Date ? value.toISOString() : String(value);
 const assessmentRecord = (r: Record<string, unknown>) => ({ ...r, createdAt: timestamp(r.createdAt), submittedCount: Number(r.submittedCount ?? 0), pendingCount: Number(r.pendingCount ?? 0) }) as AssessmentRecord;
 const attemptRecord = (r: Record<string, unknown>) => ({ ...r, savedAt: timestamp(r.savedAt), submittedAt: r.submittedAt ? timestamp(r.submittedAt) : null }) as AttemptRecord;
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+const nullableNumber = (value: unknown) => value === null || value === undefined ? null : Number(value);
+const questionGenerationRecord = (row: Record<string, unknown>) => ({
+  ...row,
+  standards: Array.isArray(row.standards) ? row.standards : [],
+  requestedCount: Number(row.requestedCount),
+  inputTokens: nullableNumber(row.inputTokens),
+  outputTokens: nullableNumber(row.outputTokens),
+  totalTokens: nullableNumber(row.totalTokens),
+  latencyMs: nullableNumber(row.latencyMs),
+  createdAt: timestamp(row.createdAt),
+  completedAt: row.completedAt ? timestamp(row.completedAt) : null,
+}) as QuestionGenerationRecord;
 
 export function createAssessmentRepository(query: Query) {
   async function getOwned(id: string, ownerId: string) {
@@ -35,6 +75,79 @@ export function createAssessmentRepository(query: Query) {
         WHERE request_limits.bucket <> EXCLUDED.bucket OR request_limits.requests < $2
         RETURNING requests`, [key, limit, windowSeconds]);
       if (!rows[0]) throw new AppError(429, "이 기능의 시간당 요청 한도에 도달했습니다. 잠시 뒤 다시 시도해 주세요.");
+    },
+    async findCompletedQuestionGeneration(ownerId: string, model: string, promptVersion: string, inputHash: string) {
+      const rows = await query(`SELECT ${questionGenerationColumns}
+        FROM ai_question_generation_runs
+        WHERE owner_id = $1 AND model = $2 AND prompt_version = $3 AND input_hash = $4 AND status = 'complete'
+        ORDER BY created_at DESC LIMIT 1`, [ownerId, model, promptVersion, inputHash]);
+      return rows[0] ? questionGenerationRecord(rows[0]) : null;
+    },
+    async listQuestionGenerations(ownerId: string, limit = 20) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new AppError(400, "조회할 AI 문항 이력 수를 확인해 주세요.");
+      const rows = await query(`SELECT ${questionGenerationColumns}
+        FROM ai_question_generation_runs
+        WHERE owner_id = $1 AND status = 'complete'
+        ORDER BY created_at DESC LIMIT $2`, [ownerId, limit]);
+      return rows.map(questionGenerationRecord);
+    },
+    async getQuestionGeneration(id: string, ownerId: string) {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        throw new AppError(404, "AI 문항 생성 이력을 찾을 수 없습니다.");
+      }
+      const rows = await query(`SELECT ${questionGenerationColumns}
+        FROM ai_question_generation_runs WHERE id = $1 AND owner_id = $2 AND status = 'complete'`, [id, ownerId]);
+      if (!rows[0]) throw new AppError(404, "AI 문항 생성 이력을 찾을 수 없거나 접근 권한이 없습니다.");
+      return questionGenerationRecord(rows[0]);
+    },
+    async beginQuestionGeneration(ownerId: string, input: {
+      model: string;
+      promptVersion: string;
+      inputHash: string;
+      title: string;
+      subject: string;
+      learningGoal: string;
+      standards: unknown[];
+      count: number;
+    }) {
+      if (!ownerId || !input.model || input.model.length > 120 || !input.promptVersion || input.promptVersion.length > 80 || !/^[0-9a-f]{64}$/.test(input.inputHash)
+        || !Number.isInteger(input.count) || input.count < 1 || input.count > 5 || !Array.isArray(input.standards) || input.standards.length < 1) {
+        throw new AppError(400, "AI 문항 생성 실행 정보를 확인해 주세요.");
+      }
+      const rows = await query(`INSERT INTO ai_question_generation_runs (
+        id, owner_id, model, prompt_version, input_hash, title, subject, learning_goal, standards, requested_count
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+      RETURNING ${questionGenerationColumns}`, [randomUUID(), ownerId, input.model, input.promptVersion, input.inputHash,
+        input.title, input.subject, input.learningGoal, JSON.stringify(input.standards), input.count]);
+      return questionGenerationRecord(rows[0]);
+    },
+    async completeQuestionGeneration(id: string, ownerId: string, input: {
+      output: unknown;
+      usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+      latencyMs: number;
+      providerMetadata?: Record<string, unknown>;
+    }) {
+      const usage = input.usage;
+      const values = [usage.inputTokens, usage.outputTokens, usage.totalTokens, input.latencyMs].filter(value => value !== undefined);
+      if (!input.output || values.some(value => !Number.isInteger(value) || Number(value) < 0)) throw new AppError(400, "AI 문항 생성 결과와 사용량을 확인해 주세요.");
+      const rows = await query(`UPDATE ai_question_generation_runs SET status = 'complete', output = $3::jsonb,
+        input_tokens = $4, output_tokens = $5, total_tokens = $6, latency_ms = $7,
+        provider_metadata = $8::jsonb, completed_at = now()
+        WHERE id = $1 AND owner_id = $2 AND status = 'pending'
+        RETURNING ${questionGenerationColumns}`, [id, ownerId, JSON.stringify(input.output), usage.inputTokens ?? null,
+        usage.outputTokens ?? null, usage.totalTokens ?? null, input.latencyMs, JSON.stringify(input.providerMetadata ?? {})]);
+      if (!rows[0]) throw new AppError(409, "AI 문항 생성 실행이 이미 완료되었거나 접근할 수 없습니다.");
+      return questionGenerationRecord(rows[0]);
+    },
+    async failQuestionGeneration(id: string, ownerId: string, input: { errorCode: string; errorMessage: string; latencyMs: number }) {
+      if (!input.errorCode || input.errorCode.length > 80 || !input.errorMessage || input.errorMessage.length > 500 || !Number.isInteger(input.latencyMs) || input.latencyMs < 0) {
+        throw new AppError(400, "AI 문항 생성 실패 기록을 확인해 주세요.");
+      }
+      const rows = await query(`UPDATE ai_question_generation_runs SET status = 'error', error_code = $3,
+        error_message = $4, latency_ms = $5, completed_at = now()
+        WHERE id = $1 AND owner_id = $2 AND status = 'pending'
+        RETURNING ${questionGenerationColumns}`, [id, ownerId, input.errorCode, input.errorMessage, input.latencyMs]);
+      return rows[0] ? questionGenerationRecord(rows[0]) : null;
     },
     async list(ownerId: string) {
       const rows = await query(`SELECT ${assessmentColumns},

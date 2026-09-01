@@ -1,11 +1,13 @@
+import { createHash } from "node:crypto";
 import { APICallError, generateText, Output } from "ai";
 import { z } from "zod";
 import { requireTeacher } from "../../../../lib/teacher-auth";
-import { apiError, readMutation } from "../../../../lib/http";
+import { apiError, privateJson, readMutation } from "../../../../lib/http";
 import curriculum from "../../../../data/achievement-standards.2022.json";
 import { getRepository } from "../../../../db/connection";
 
 export const maxDuration = 30;
+const promptVersion = "elementary-questions-v2";
 
 const requestSchema = z.object({
   title: z.string().trim().max(120),
@@ -29,6 +31,24 @@ const questionSchema = z.object({
   })),
 });
 
+const safeProviderMetadata = (value: unknown) => {
+  try { return JSON.parse(JSON.stringify(value ?? {})) as Record<string, unknown>; }
+  catch { return {}; }
+};
+
+const classifyGenerationError = (error: unknown) => {
+  const errorMessage = error instanceof Error ? error.message : "Unknown error";
+  if (errorMessage.includes("Free tier users")) return { status: 403, code: "credits_required", message: "Luna 모델을 사용하려면 Vercel AI Gateway 유료 크레딧 연결이 필요합니다." };
+  if (APICallError.isInstance(error)) {
+    if (error.statusCode === 402) return { status: 402, code: "budget_exceeded", message: "AI 사용 예산을 확인해 주세요." };
+    if (error.statusCode === 403) return { status: 403, code: "credits_required", message: "Luna 모델을 사용하려면 Vercel AI Gateway 유료 크레딧 연결이 필요합니다." };
+    if (error.statusCode === 429) return { status: 429, code: "rate_limited", message: "요청이 많습니다. 잠시 뒤 다시 시도해 주세요." };
+    if (error.statusCode === 503) return { status: 503, code: "provider_unavailable", message: "AI 서비스가 잠시 불안정합니다. 다시 시도해 주세요." };
+    return { status: 502, code: `provider_${error.statusCode ?? "error"}`, message: "AI 문항 결과를 확인하지 못했습니다. 다시 시도해 주세요." };
+  }
+  return { status: 500, code: "generation_failed", message: "문항 초안을 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요." };
+};
+
 export async function POST(request: Request) {
   let teacherId: string;
   let body: unknown;
@@ -45,18 +65,39 @@ export async function POST(request: Request) {
   const standards = parsed.data.standards.map(item => curriculum.standards.find(s => s.code === item.code && s.subject === subject.split(" ")[1] && s.gradeBand === gradeBand));
   if (!/^[1-6]학년 /.test(subject) || standards.some(s => !s)) return Response.json({ error: "초등 학년군과 성취기준이 일치하지 않습니다." }, { status: 400 });
   const verifiedStandards = standards.filter(s => s !== undefined);
-  const configuredLimit = Number(process.env.AI_QUESTIONS_PER_HOUR ?? 30);
-  const hourlyLimit = Number.isInteger(configuredLimit) && configuredLimit > 0 && configuredLimit <= 1000 ? configuredLimit : 30;
-  try { await getRepository().consumeLimit(`ai-questions:${teacherId}`, hourlyLimit, 3600); }
-  catch (error) { return apiError(error); }
   const allowedCodes = new Set(verifiedStandards.map((standard) => standard.code));
   const standardsText = verifiedStandards
     .map((standard) => `- [${standard.code}] ${standard.domain}: ${standard.content}`)
     .join("\n");
+  const model = process.env.AI_MODEL ?? "openai/gpt-5.6-luna";
+  const generationInput = { title, subject, learningGoal, standards: verifiedStandards, count };
+  const inputHash = createHash("sha256").update(JSON.stringify({ promptVersion, model, ...generationInput })).digest("hex");
+  const repository = getRepository();
+  try {
+    const cached = await repository.findCompletedQuestionGeneration(teacherId, model, promptVersion, inputHash);
+    const output = cached ? questionSchema.safeParse(cached.output) : null;
+    if (cached && output?.success && output.data.questions.length === count) {
+      return privateJson({ generationId: cached.id, model, questions: output.data.questions, usage: {
+        inputTokens: cached.inputTokens, outputTokens: cached.outputTokens, totalTokens: cached.totalTokens,
+      }, cached: true });
+    }
+  } catch (error) { return apiError(error); }
 
+  const configuredLimit = Number(process.env.AI_QUESTIONS_PER_HOUR ?? 30);
+  const hourlyLimit = Number.isInteger(configuredLimit) && configuredLimit > 0 && configuredLimit <= 1000 ? configuredLimit : 30;
+  let generationId: string;
+  try {
+    await repository.consumeLimit(`ai-questions:${teacherId}`, hourlyLimit, 3600);
+    generationId = (await repository.beginQuestionGeneration(teacherId, {
+      model, promptVersion, inputHash, title, subject, learningGoal,
+      standards: verifiedStandards, count,
+    })).id;
+  } catch (error) { return apiError(error); }
+
+  const startedAt = Date.now();
   try {
     const result = await generateText({
-      model: process.env.AI_MODEL ?? "openai/gpt-5.6-luna",
+      model,
       output: Output.object({
         name: "ElementaryAssessmentQuestions",
         description: "초등학교 성취기준에 정렬된 교사용 평가 문항 초안",
@@ -89,26 +130,34 @@ export async function POST(request: Request) {
 
     const questions = result.output.questions;
     if (questions.some(question => !allowedCodes.has(question.standardCode))) {
-      return Response.json({ error: "생성된 문항의 성취기준 연결을 검증하지 못했습니다. 다시 생성해 주세요." }, { status: 502 });
+      await repository.failQuestionGeneration(generationId, teacherId, {
+        errorCode: "invalid_standard_mapping",
+        errorMessage: "생성된 문항의 성취기준 연결을 검증하지 못했습니다.",
+        latencyMs: Date.now() - startedAt,
+      });
+      return privateJson({ error: "생성된 문항의 성취기준 연결을 검증하지 못했습니다. 다시 생성해 주세요." }, 502);
     }
-
-    return Response.json({
-      model: process.env.AI_MODEL ?? "openai/gpt-5.6-luna",
-      questions,
-      usage: result.usage,
+    const completed = await repository.completeQuestionGeneration(generationId, teacherId, {
+      output: { questions },
+      usage: {
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        totalTokens: result.usage.totalTokens,
+      },
+      latencyMs: Date.now() - startedAt,
+      providerMetadata: safeProviderMetadata(result.providerMetadata),
     });
+    return privateJson({ generationId: completed.id, model, questions, usage: {
+      inputTokens: completed.inputTokens, outputTokens: completed.outputTokens, totalTokens: completed.totalTokens,
+    }, cached: false }, 201);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    if (errorMessage.includes("Free tier users")) {
-      return Response.json({ error: "Luna 모델을 사용하려면 Vercel AI Gateway 유료 크레딧 연결이 필요합니다." }, { status: 403 });
-    }
-    if (APICallError.isInstance(error)) {
-      if (error.statusCode === 402) return Response.json({ error: "AI 사용 예산을 확인해 주세요." }, { status: 402 });
-      if (error.statusCode === 403) return Response.json({ error: "Luna 모델을 사용하려면 Vercel AI Gateway 유료 크레딧 연결이 필요합니다." }, { status: 403 });
-      if (error.statusCode === 429) return Response.json({ error: "요청이 많습니다. 잠시 뒤 다시 시도해 주세요." }, { status: 429 });
-      if (error.statusCode === 503) return Response.json({ error: "AI 서비스가 잠시 불안정합니다. 다시 시도해 주세요." }, { status: 503 });
-    }
-    console.error("Question generation failed", errorMessage);
-    return Response.json({ error: "문항 초안을 만들지 못했습니다. 잠시 뒤 다시 시도해 주세요." }, { status: 500 });
+    const failure = classifyGenerationError(error);
+    await repository.failQuestionGeneration(generationId, teacherId, {
+      errorCode: failure.code,
+      errorMessage: failure.message,
+      latencyMs: Date.now() - startedAt,
+    }).catch(() => null);
+    console.error("Question generation failed", { code: failure.code, type: error instanceof Error ? error.name : "UnknownError" });
+    return privateJson({ error: failure.message }, failure.status);
   }
 }

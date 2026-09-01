@@ -3,14 +3,16 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { createGrowthRepository } from "../db/growth-repository";
-import type { Query } from "../db/repository";
+import { createAssessmentRepository, type Query } from "../db/repository";
 import { AppError } from "../lib/assessment-domain";
 import { validateRubric, validateTerm, validateUnit } from "../lib/growth-domain";
 
 const coreSchema = await readFile(new URL("../db/migrations/0001_assessment_core.sql", import.meta.url), "utf8");
 const growthSchema = await readFile(new URL("../db/migrations/0002_curriculum_growth.sql", import.meta.url), "utf8");
+const aiSchema = await readFile(new URL("../db/migrations/0003_ai_assessment_suggestions.sql", import.meta.url), "utf8");
 let pg: PGlite;
 let repo: ReturnType<typeof createGrowthRepository>;
+let assessmentRepo: ReturnType<typeof createAssessmentRepository>;
 const adapter = (db: PGlite): Query => async <T extends Record<string, unknown>>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows;
 const status = (code: number) => (error: unknown) => error instanceof AppError && error.status === code;
 const now = () => new Date().toISOString();
@@ -19,7 +21,9 @@ before(async () => {
   pg = await PGlite.create();
   await pg.exec(coreSchema);
   await pg.exec(growthSchema);
+  await pg.exec(aiSchema);
   repo = createGrowthRepository(adapter(pg));
+  assessmentRepo = createAssessmentRepository(adapter(pg));
 });
 after(async () => { await pg.close(); });
 
@@ -62,6 +66,50 @@ test("학년·교과·성취기준·서술 루브릭을 서버에서 검증", ()
   assert.throws(() => validateRubric({ criteria: [{ key: "concept", name: "개념", description: "개념 이해를 확인한다.", high: "잘함", middle: "보통", low: "부족" }] }), status(400));
 });
 
+test("교육과정 문항 AI 생성 요청·성공·실패·중복 재사용 이력을 보존", async () => {
+  const owner = `teacher-${crypto.randomUUID()}`;
+  const inputHash = "c".repeat(64);
+  const run = await assessmentRepo.beginQuestionGeneration(owner, {
+    model: "openai/gpt-5.6-luna",
+    promptVersion: "elementary-questions-v2",
+    inputHash,
+    title: "민주주의 단원 평가",
+    subject: "6학년 사회",
+    learningGoal: "선거와 시민 주권의 관계를 근거와 함께 설명한다.",
+    standards: [{ code: "6사08-01", domain: "정치", content: "선거의 의미와 역할을 파악한다." }],
+    count: 1,
+  });
+  assert.equal(run.status, "pending");
+  const completed = await assessmentRepo.completeQuestionGeneration(run.id, owner, {
+    output: { questions: [{ prompt: "선거가 시민의 주권 행사인 까닭을 사례와 함께 설명하세요.", kind: "서술형", standardCode: "6사08-01", criterion: "논리적 설명", points: 20 }] },
+    usage: { inputTokens: 300, outputTokens: 120, totalTokens: 420 },
+    latencyMs: 780,
+    providerMetadata: { gateway: "test" },
+  });
+  assert.equal(completed.status, "complete");
+  assert.equal(completed.totalTokens, 420);
+  assert.equal((completed.output as { questions: unknown[] }).questions.length, 1);
+  const cached = await assessmentRepo.findCompletedQuestionGeneration(owner, "openai/gpt-5.6-luna", "elementary-questions-v2", inputHash);
+  assert.equal(cached?.id, completed.id);
+  assert.equal(await assessmentRepo.findCompletedQuestionGeneration("other-teacher", "openai/gpt-5.6-luna", "elementary-questions-v2", inputHash), null);
+  const failedRun = await assessmentRepo.beginQuestionGeneration(owner, {
+    model: "openai/gpt-5.6-luna", promptVersion: "elementary-questions-v2", inputHash: "d".repeat(64),
+    title: "실패 기록", subject: "6학년 사회", learningGoal: "실패한 생성도 이력에 남긴다.",
+    standards: [{ code: "6사08-01" }], count: 1,
+  });
+  const failed = await assessmentRepo.failQuestionGeneration(failedRun.id, owner, { errorCode: "budget_exceeded", errorMessage: "AI 사용 예산을 확인해 주세요.", latencyMs: 90 });
+  assert.equal(failed?.status, "error");
+  const history = await assessmentRepo.listQuestionGenerations(owner, 10);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].id, completed.id);
+  assert.equal(history[0].title, "민주주의 단원 평가");
+  assert.equal(history[0].requestedCount, 1);
+  const restored = await assessmentRepo.getQuestionGeneration(completed.id, owner);
+  assert.equal((restored.output as { questions: unknown[] }).questions.length, 1);
+  assert.deepEqual(await assessmentRepo.listQuestionGenerations("other-teacher", 10), []);
+  await assert.rejects(assessmentRepo.getQuestionGeneration(completed.id, "other-teacher"), status(404));
+});
+
 test("학기→단원→루브릭→증거→피드백→추가 학습→재평가→학기말 판단 전체 흐름", async () => {
   const { owner, term, unit, standard, criterion, student } = await createBase();
   await assert.rejects(repo.getOwnedTerm(term.id, "other-teacher"), status(404));
@@ -100,6 +148,31 @@ test("학기→단원→루브릭→증거→피드백→추가 학습→재평�
   assert.equal(draft.revision, 1);
   assert.equal(initialFinal.revision, 2);
   assert.equal(initialFinal.supersedesId, draft.id);
+
+  const aiContext = await repo.getAiSuggestionContext(initialEvidence.id, criterion.id, owner);
+  assert.equal(aiContext.standardCode, "6사08-01");
+  assert.equal(aiContext.assistanceLevel, "teacher_prompt");
+  const aiRun = await repo.beginAiSuggestion(initialEvidence.id, criterion.id, owner, "openai/gpt-5.6-luna", "criterion-v1", "a".repeat(64));
+  assert.equal(aiRun.status, "pending");
+  const aiSuggestion = await repo.completeAiSuggestion(aiRun.id, owner, {
+    suggestedLevel: "하",
+    confidence: 0.82,
+    evidenceExcerpt: "선거는 대표를 뽑는 투표입니다.",
+    rationale: "투표 절차는 설명했지만 시민 주권과의 관계를 연결한 근거는 드러나지 않았다.",
+    uncertainty: "짧은 글 한 편만으로 다른 맥락의 적용 수준은 확인하기 어렵다.",
+    missingEvidence: "새로운 선거 사례를 도움 없이 설명하는 수행 증거가 더 필요하다.",
+    constructCaution: "글의 길이나 맞춤법을 사회 개념 이해 수준의 근거로 사용하지 않았다.",
+    usage: { inputTokens: 420, outputTokens: 180, totalTokens: 600 },
+    latencyMs: 910,
+    providerMetadata: { gateway: "test" },
+  });
+  assert.equal(aiSuggestion.suggestedLevel, "하");
+  assert.equal(aiSuggestion.totalTokens, 600);
+  const cachedSuggestion = await repo.findCompletedAiSuggestion(initialEvidence.id, criterion.id, owner, "openai/gpt-5.6-luna", "criterion-v1", "a".repeat(64));
+  assert.equal(cachedSuggestion?.id, aiSuggestion.id);
+  const failedRun = await repo.beginAiSuggestion(initialEvidence.id, criterion.id, owner, "openai/gpt-5.6-luna", "criterion-v1", "b".repeat(64));
+  const failed = await repo.failAiSuggestion(failedRun.id, owner, { errorCode: "rate_limited", errorMessage: "잠시 뒤 다시 시도해 주세요.", latencyMs: 120 });
+  assert.equal(failed?.status, "error");
 
   const feedback = await repo.createFeedback(owner, {
     studentId: student.id,
@@ -209,6 +282,7 @@ test("학기→단원→루브릭→증거→피드백→추가 학습→재평�
   assert.equal(workflow.rubrics[0].criteria[0].name, "개념과 원리");
   assert.equal(workflow.evidence.length, 3);
   assert.equal(workflow.evidence.find(item => item.id === independentEvidence.id)?.judgements[0].level, "상");
+  assert.equal(workflow.evidence.find(item => item.id === initialEvidence.id)?.aiSuggestions[0].suggestedLevel, "하");
   assert.equal(workflow.feedback[0].interventions.length, 1);
   assert.equal(workflow.feedback[0].reassessments[0].independent, true);
   assert.equal(workflow.semesterJudgements[0].evidence.length, 2);

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { AppError } from "../lib/assessment-domain";
 import {
+  aiSuggestionCompletionSchema,
+  aiSuggestionFailureSchema,
   assessmentEventInputSchema,
   evidenceInputSchema,
   feedbackInputSchema,
@@ -124,6 +126,72 @@ export type CriterionJudgementRecord = {
   createdAt: string;
 };
 
+export type AiGenerationRunRecord = {
+  id: string;
+  evidenceId: string;
+  rubricCriterionId: string;
+  model: string;
+  promptVersion: string;
+  inputHash: string;
+  status: "pending" | "complete" | "error";
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  latencyMs: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
+};
+
+export type AiCriterionSuggestionRecord = {
+  id: string;
+  generationRunId: string;
+  evidenceId: string;
+  rubricCriterionId: string;
+  criterionName: string;
+  unitStandardId: string;
+  standardCode: string;
+  model: string;
+  promptVersion: string;
+  suggestedLevel: "상" | "중" | "하" | "판단 보류";
+  confidence: number;
+  evidenceExcerpt: string;
+  rationale: string;
+  uncertainty: string;
+  missingEvidence: string;
+  constructCaution: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  latencyMs: number | null;
+  createdAt: string;
+};
+
+export type AiSuggestionContext = {
+  evidenceId: string;
+  rubricCriterionId: string;
+  studentId: string;
+  grade: number;
+  subject: string;
+  unitId: string;
+  unitTitle: string;
+  standardCode: string;
+  standardContent: string;
+  eventTitle: string;
+  eventContext: string;
+  eventType: AssessmentEventRecord["eventType"];
+  modality: EvidenceRecord["modality"];
+  assistanceLevel: EvidenceRecord["assistanceLevel"];
+  evidenceText: string;
+  teacherVerified: boolean;
+  criterionName: string;
+  criterionDescription: string;
+  high: string;
+  middle: string;
+  low: string;
+};
+
 export type FeedbackRecord = {
   id: string;
   studentId: string;
@@ -216,6 +284,7 @@ export type WorkflowEvidenceRecord = EvidenceRecord & {
     unitStandardId: string;
     standardCode: string;
   }>;
+  aiSuggestions: AiCriterionSuggestionRecord[];
 };
 
 export type WorkflowFeedbackRecord = FeedbackRecord & {
@@ -248,6 +317,17 @@ const termRecord = (row: Record<string, unknown>) => ({
   evidenceCount: number(row.evidenceCount),
   createdAt: timestamp(row.createdAt),
 }) as CurriculumTermRecord;
+
+const nullableNumber = (value: unknown) => value === null || value === undefined ? null : number(value);
+const aiSuggestionRecord = (row: Record<string, unknown>) => ({
+  ...row,
+  confidence: number(row.confidence),
+  inputTokens: nullableNumber(row.inputTokens),
+  outputTokens: nullableNumber(row.outputTokens),
+  totalTokens: nullableNumber(row.totalTokens),
+  latencyMs: nullableNumber(row.latencyMs),
+  createdAt: timestamp(row.createdAt),
+}) as AiCriterionSuggestionRecord;
 
 export function createGrowthRepository(query: Query) {
   async function getOwnedTerm(id: string, ownerId: string) {
@@ -505,6 +585,172 @@ export function createGrowthRepository(query: Query) {
       [rubricId, ownerId, randomUUID()]);
       if (!rows[0]) throw new AppError(409, "루브릭이 이미 잠겼거나, 평가 요소가 없거나, 접근할 수 없습니다.");
       return { ...rows[0], version: number(rows[0].version), lockedAt: timestamp(rows[0].lockedAt) } as Pick<RubricRecord, "id" | "unitStandardId" | "version" | "state"> & { lockedAt: string };
+    },
+
+    async getAiSuggestionContext(evidenceId: string, rubricCriterionId: string, ownerId: string) {
+      const rows = await query(`SELECT e.id AS "evidenceId", c.id AS "rubricCriterionId",
+        s.id AS "studentId", t.grade, t.subject, u.id AS "unitId", u.title AS "unitTitle",
+        us.standard_code AS "standardCode", us.standard_content AS "standardContent",
+        event.title AS "eventTitle", event.context AS "eventContext", event.event_type AS "eventType",
+        e.modality, e.assistance_level AS "assistanceLevel",
+        coalesce(e.original_text, e.transformed_text, '') AS "evidenceText",
+        e.teacher_verified AS "teacherVerified", c.name AS "criterionName",
+        c.description AS "criterionDescription", c.high_descriptor AS high,
+        c.middle_descriptor AS middle, c.low_descriptor AS low
+        FROM learning_evidence e
+        JOIN curriculum_students s ON s.id = e.student_id
+        JOIN curriculum_terms t ON t.id = s.term_id
+        JOIN assessment_events event ON event.id = e.event_id
+        JOIN curriculum_units u ON u.id = event.unit_id AND u.term_id = t.id
+        JOIN rubric_criteria c ON c.id = $2
+        JOIN rubric_versions rv ON rv.id = c.rubric_version_id AND rv.state = 'locked'
+        JOIN unit_standards us ON us.id = rv.unit_standard_id AND us.unit_id = u.id
+        WHERE e.id = $1 AND t.owner_id = $3
+          AND char_length(coalesce(e.original_text, e.transformed_text, '')) > 0
+          AND (e.transformation_status <> 'automated' OR e.teacher_verified)`,
+      [evidenceId, rubricCriterionId, ownerId]);
+      if (!rows[0]) throw new AppError(409, "잠긴 루브릭과 교사가 확인한 학생 수행 원문을 먼저 준비해 주세요.");
+      return { ...rows[0], grade: number(rows[0].grade) } as AiSuggestionContext;
+    },
+
+    async findCompletedAiSuggestion(evidenceId: string, rubricCriterionId: string, ownerId: string, model: string, promptVersion: string, inputHash: string) {
+      const rows = await query(`SELECT suggestion.id, suggestion.generation_run_id AS "generationRunId",
+        suggestion.evidence_id AS "evidenceId", suggestion.rubric_criterion_id AS "rubricCriterionId",
+        c.name AS "criterionName", us.id AS "unitStandardId", us.standard_code AS "standardCode",
+        suggestion.model, suggestion.prompt_version AS "promptVersion",
+        suggestion.suggested_level AS "suggestedLevel", suggestion.confidence,
+        suggestion.evidence_excerpt AS "evidenceExcerpt", suggestion.rationale,
+        suggestion.uncertainty, suggestion.missing_evidence AS "missingEvidence",
+        suggestion.construct_caution AS "constructCaution", run.input_tokens AS "inputTokens",
+        run.output_tokens AS "outputTokens", run.total_tokens AS "totalTokens",
+        run.latency_ms AS "latencyMs", suggestion.created_at AS "createdAt"
+        FROM ai_criterion_suggestions suggestion
+        JOIN ai_generation_runs run ON run.id = suggestion.generation_run_id AND run.status = 'complete'
+        JOIN learning_evidence e ON e.id = suggestion.evidence_id
+        JOIN curriculum_students s ON s.id = e.student_id
+        JOIN curriculum_terms t ON t.id = s.term_id
+        JOIN rubric_criteria c ON c.id = suggestion.rubric_criterion_id
+        JOIN rubric_versions rv ON rv.id = c.rubric_version_id
+        JOIN unit_standards us ON us.id = rv.unit_standard_id
+        WHERE suggestion.evidence_id = $1 AND suggestion.rubric_criterion_id = $2
+          AND t.owner_id = $3 AND run.model = $4 AND run.prompt_version = $5 AND run.input_hash = $6
+        ORDER BY suggestion.created_at DESC LIMIT 1`,
+      [evidenceId, rubricCriterionId, ownerId, model, promptVersion, inputHash]);
+      return rows[0] ? aiSuggestionRecord(rows[0]) : null;
+    },
+
+    async beginAiSuggestion(evidenceId: string, rubricCriterionId: string, ownerId: string, model: string, promptVersion: string, inputHash: string) {
+      if (!model || model.length > 120 || !promptVersion || promptVersion.length > 80 || !/^[0-9a-f]{64}$/.test(inputHash)) {
+        throw new AppError(400, "AI 평가 실행 정보를 확인해 주세요.");
+      }
+      const id = randomUUID();
+      const rows = await query(`WITH authorized AS (
+        SELECT e.id AS evidence_id, c.id AS criterion_id
+        FROM learning_evidence e
+        JOIN curriculum_students s ON s.id = e.student_id
+        JOIN curriculum_terms t ON t.id = s.term_id
+        JOIN assessment_events event ON event.id = e.event_id
+        JOIN curriculum_units u ON u.id = event.unit_id AND u.term_id = t.id
+        JOIN rubric_criteria c ON c.id = $2
+        JOIN rubric_versions rv ON rv.id = c.rubric_version_id AND rv.state = 'locked'
+        JOIN unit_standards us ON us.id = rv.unit_standard_id AND us.unit_id = u.id
+        WHERE e.id = $1 AND t.owner_id = $3
+      ), inserted AS (
+        INSERT INTO ai_generation_runs (id, owner_id, evidence_id, rubric_criterion_id, feature, model, prompt_version, input_hash)
+        SELECT $4, $3, evidence_id, criterion_id, 'criterion_suggestion', $5, $6, $7 FROM authorized
+        RETURNING *
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $8, $3, $3, 'ai_suggestion.started', 'ai_generation_run', id,
+          jsonb_build_object('evidenceId', evidence_id, 'criterionId', rubric_criterion_id, 'model', model, 'promptVersion', prompt_version)
+        FROM inserted
+      )
+      SELECT id, evidence_id AS "evidenceId", rubric_criterion_id AS "rubricCriterionId",
+        model, prompt_version AS "promptVersion", input_hash AS "inputHash", status,
+        input_tokens AS "inputTokens", output_tokens AS "outputTokens", total_tokens AS "totalTokens",
+        latency_ms AS "latencyMs", error_code AS "errorCode", error_message AS "errorMessage",
+        created_at AS "createdAt", completed_at AS "completedAt" FROM inserted`,
+      [evidenceId, rubricCriterionId, ownerId, id, model, promptVersion, inputHash, randomUUID()]);
+      if (!rows[0]) throw new AppError(404, "학생 증거와 잠긴 루브릭 기준의 연결을 찾을 수 없습니다.");
+      return {
+        ...rows[0], inputTokens: null, outputTokens: null, totalTokens: null, latencyMs: null,
+        createdAt: timestamp(rows[0].createdAt), completedAt: null,
+      } as AiGenerationRunRecord;
+    },
+
+    async completeAiSuggestion(runId: string, ownerId: string, input: unknown) {
+      const value = parseInput(aiSuggestionCompletionSchema, input, "AI 추천 결과와 사용량을 확인해 주세요.");
+      const suggestionId = randomUUID();
+      const rows = await query(`WITH completed AS (
+        UPDATE ai_generation_runs run SET status = 'complete', input_tokens = $11,
+          output_tokens = $12, total_tokens = $13, latency_ms = $14,
+          provider_metadata = $15::jsonb, completed_at = now()
+        WHERE run.id = $1 AND run.owner_id = $2 AND run.status = 'pending'
+        RETURNING *
+      ), inserted AS (
+        INSERT INTO ai_criterion_suggestions (
+          id, generation_run_id, evidence_id, rubric_criterion_id, model, prompt_version,
+          suggested_level, confidence, evidence_excerpt, rationale, uncertainty,
+          missing_evidence, construct_caution
+        )
+        SELECT $3, id, evidence_id, rubric_criterion_id, model, prompt_version,
+          $4, $5, $6, $7, $8, $9, $10 FROM completed
+        RETURNING *
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $16, $2, $2, 'ai_suggestion.completed', 'ai_criterion_suggestion', id,
+          jsonb_build_object('runId', generation_run_id, 'level', suggested_level, 'confidence', confidence, 'totalTokens', $13::int)
+        FROM inserted
+      )
+      SELECT suggestion.id, suggestion.generation_run_id AS "generationRunId",
+        suggestion.evidence_id AS "evidenceId", suggestion.rubric_criterion_id AS "rubricCriterionId",
+        c.name AS "criterionName", us.id AS "unitStandardId", us.standard_code AS "standardCode",
+        suggestion.model, suggestion.prompt_version AS "promptVersion",
+        suggestion.suggested_level AS "suggestedLevel", suggestion.confidence,
+        suggestion.evidence_excerpt AS "evidenceExcerpt", suggestion.rationale,
+        suggestion.uncertainty, suggestion.missing_evidence AS "missingEvidence",
+        suggestion.construct_caution AS "constructCaution", run.input_tokens AS "inputTokens",
+        run.output_tokens AS "outputTokens", run.total_tokens AS "totalTokens",
+        run.latency_ms AS "latencyMs", suggestion.created_at AS "createdAt"
+      FROM inserted suggestion
+      JOIN completed run ON run.id = suggestion.generation_run_id
+      JOIN rubric_criteria c ON c.id = suggestion.rubric_criterion_id
+      JOIN rubric_versions rv ON rv.id = c.rubric_version_id
+      JOIN unit_standards us ON us.id = rv.unit_standard_id`, [
+        runId, ownerId, suggestionId, value.suggestedLevel, value.confidence,
+        value.evidenceExcerpt, value.rationale, value.uncertainty, value.missingEvidence,
+        value.constructCaution, value.usage.inputTokens ?? null, value.usage.outputTokens ?? null,
+        value.usage.totalTokens ?? null, value.latencyMs, JSON.stringify(value.providerMetadata), randomUUID(),
+      ]);
+      if (!rows[0]) throw new AppError(409, "AI 추천 실행이 이미 완료되었거나 접근할 수 없습니다.");
+      return aiSuggestionRecord(rows[0]);
+    },
+
+    async failAiSuggestion(runId: string, ownerId: string, input: unknown) {
+      const value = parseInput(aiSuggestionFailureSchema, input, "AI 추천 실패 기록을 확인해 주세요.");
+      const rows = await query(`WITH failed AS (
+        UPDATE ai_generation_runs run SET status = 'error', error_code = $3,
+          error_message = $4, latency_ms = $5, completed_at = now()
+        WHERE run.id = $1 AND run.owner_id = $2 AND run.status = 'pending'
+        RETURNING *
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $6, $2, $2, 'ai_suggestion.failed', 'ai_generation_run', id,
+          jsonb_build_object('errorCode', error_code, 'latencyMs', latency_ms)
+        FROM failed
+      )
+      SELECT id, evidence_id AS "evidenceId", rubric_criterion_id AS "rubricCriterionId",
+        model, prompt_version AS "promptVersion", input_hash AS "inputHash", status,
+        input_tokens AS "inputTokens", output_tokens AS "outputTokens", total_tokens AS "totalTokens",
+        latency_ms AS "latencyMs", error_code AS "errorCode", error_message AS "errorMessage",
+        created_at AS "createdAt", completed_at AS "completedAt" FROM failed`,
+      [runId, ownerId, value.errorCode, value.errorMessage, value.latencyMs, randomUUID()]);
+      if (!rows[0]) return null;
+      return {
+        ...rows[0], inputTokens: nullableNumber(rows[0].inputTokens), outputTokens: nullableNumber(rows[0].outputTokens),
+        totalTokens: nullableNumber(rows[0].totalTokens), latencyMs: nullableNumber(rows[0].latencyMs),
+        createdAt: timestamp(rows[0].createdAt), completedAt: timestamp(rows[0].completedAt),
+      } as AiGenerationRunRecord;
     },
 
     async saveJudgement(evidenceId: string, ownerId: string, input: unknown) {
@@ -779,7 +1025,35 @@ export function createGrowthRepository(query: Query) {
               WHERE j.evidence_id = e.id
               ORDER BY j.rubric_criterion_id, j.revision DESC, j.created_at DESC
             ) latest
-          ), '[]') AS judgements
+          ), '[]') AS judgements,
+          coalesce((
+            SELECT jsonb_agg(jsonb_build_object(
+              'id', latest.id, 'generationRunId', latest.generation_run_id,
+              'evidenceId', latest.evidence_id, 'rubricCriterionId', latest.rubric_criterion_id,
+              'criterionName', latest.criterion_name, 'unitStandardId', latest.unit_standard_id,
+              'standardCode', latest.standard_code, 'model', latest.model,
+              'promptVersion', latest.prompt_version, 'suggestedLevel', latest.suggested_level,
+              'confidence', latest.confidence, 'evidenceExcerpt', latest.evidence_excerpt,
+              'rationale', latest.rationale, 'uncertainty', latest.uncertainty,
+              'missingEvidence', latest.missing_evidence, 'constructCaution', latest.construct_caution,
+              'inputTokens', latest.input_tokens, 'outputTokens', latest.output_tokens,
+              'totalTokens', latest.total_tokens, 'latencyMs', latest.latency_ms,
+              'createdAt', latest.created_at
+            ) ORDER BY latest.standard_code, latest.criterion_position)
+            FROM (
+              SELECT DISTINCT ON (suggestion.rubric_criterion_id)
+                suggestion.*, c.name AS criterion_name, c.position AS criterion_position,
+                us.id AS unit_standard_id, us.standard_code, run.input_tokens,
+                run.output_tokens, run.total_tokens, run.latency_ms
+              FROM ai_criterion_suggestions suggestion
+              JOIN ai_generation_runs run ON run.id = suggestion.generation_run_id AND run.status = 'complete'
+              JOIN rubric_criteria c ON c.id = suggestion.rubric_criterion_id
+              JOIN rubric_versions rv ON rv.id = c.rubric_version_id
+              JOIN unit_standards us ON us.id = rv.unit_standard_id
+              WHERE suggestion.evidence_id = e.id
+              ORDER BY suggestion.rubric_criterion_id, suggestion.created_at DESC
+            ) latest
+          ), '[]') AS "aiSuggestions"
           FROM learning_evidence e
           JOIN curriculum_students s ON s.id = e.student_id
           JOIN curriculum_terms t ON t.id = s.term_id
