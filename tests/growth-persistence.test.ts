@@ -6,11 +6,14 @@ import { createGrowthRepository } from "../db/growth-repository";
 import { createAssessmentRepository, type Query } from "../db/repository";
 import { AppError, type AssessmentDefinition } from "../lib/assessment-domain";
 import { validateRubric, validateTerm, validateUnit } from "../lib/growth-domain";
+import { previewCurriculumDocument } from "../lib/curriculum-import";
+import { validateSchoolPlan } from "../lib/school-curriculum-domain";
 
 const coreSchema = await readFile(new URL("../db/migrations/0001_assessment_core.sql", import.meta.url), "utf8");
 const growthSchema = await readFile(new URL("../db/migrations/0002_curriculum_growth.sql", import.meta.url), "utf8");
 const aiSchema = await readFile(new URL("../db/migrations/0003_ai_assessment_suggestions.sql", import.meta.url), "utf8");
 const bridgeSchema = await readFile(new URL("../db/migrations/0004_assessment_growth_bridge.sql", import.meta.url), "utf8");
+const schoolPlanSchema = await readFile(new URL("../db/migrations/0005_school_curriculum_plans.sql", import.meta.url), "utf8");
 let pg: PGlite;
 let repo: ReturnType<typeof createGrowthRepository>;
 let assessmentRepo: ReturnType<typeof createAssessmentRepository>;
@@ -24,6 +27,7 @@ before(async () => {
   await pg.exec(growthSchema);
   await pg.exec(aiSchema);
   await pg.exec(bridgeSchema);
+  await pg.exec(schoolPlanSchema);
   repo = createGrowthRepository(adapter(pg));
   assessmentRepo = createAssessmentRepository(adapter(pg));
 });
@@ -66,6 +70,68 @@ test("학년·교과·성취기준·서술 루브릭을 서버에서 검증", ()
   assert.throws(() => validateTerm({ schoolYear: 2026, semester: 1, grade: 1, className: "1-1", subject: "사회" }), status(400));
   assert.throws(() => validateUnit({ orderIndex: 1, title: "민주주의", standardCodes: ["9사01-01"] }, { grade: 6, subject: "사회" }), status(400));
   assert.throws(() => validateRubric({ criteria: [{ key: "concept", name: "개념", description: "개념 이해를 확인한다.", high: "잘함", middle: "보통", low: "부족" }] }), status(400));
+});
+
+test("CSV 학년 교육과정에서 단원·평가방법·성취기준을 외부 AI 없이 추출", async () => {
+  const csv = [
+    "순서,학년,학기,교과,단원명,성취기준,평가시기,평가방법,평가요소",
+    "1,6,1,사회,민주주의와 시민 참여,6사08-01 6사08-02,5월,서술형·발표,선거와 시민 주권의 관계 설명",
+  ].join("\n");
+  const preview = await previewCurriculumDocument(new File([csv], "6학년-사회.csv", { type: "text/csv" }), {
+    documentKind: "grade", schoolYear: 2026, grade: 6, semester: 1, subject: "사회",
+  });
+  assert.equal(preview.gradeTemplates.length, 1);
+  assert.equal(preview.gradeTemplates[0].units[0].title, "민주주의와 시민 참여");
+  assert.deepEqual(preview.gradeTemplates[0].units[0].standardCodes, ["6사08-01", "6사08-02"]);
+  assert.deepEqual(preview.gradeTemplates[0].units[0].assessmentMethods, ["text", "speech"]);
+  assert.equal(preview.matchedStandards.length, 2);
+  assert.equal(preview.sourceDocument.detectedStandardCount, 2);
+  assert.match(preview.sourceDocument.sha256, /^[0-9a-f]{64}$/);
+});
+
+test("학교 계획 승인본을 버전 보존하며 학급 학기·단원으로 원자 복제", async () => {
+  const owner = `school-admin-${crypto.randomUUID()}`;
+  const school = await repo.createSchool(owner, { name: "무무초등학교", region: "전북특별자치도" });
+  assert.equal(school.role, "admin");
+  assert.equal((await repo.listSchools(owner)).length, 1);
+  assert.equal((await repo.listSchools("other-teacher")).length, 0);
+  const templateKey = crypto.randomUUID();
+  const planInput = {
+    schoolId: school.id,
+    schoolYear: 2026,
+    state: "approved" as const,
+    schoolBasics: { vision: "학생의 질문과 성장을 중심에 두는 교육", focusAreas: ["학생 주도 탐구"], assessmentPolicy: "성취기준에 따른 준거참조 평가를 실시한다.", schoolEvents: [] },
+    gradeTemplates: [{
+      key: templateKey, grade: 6, semester: 1 as const, subject: "사회" as const, notes: "",
+      units: [{
+        key: crypto.randomUUID(), orderIndex: 1, title: "민주주의와 시민 참여",
+        standardCodes: ["6사08-01", "6사08-02"], plannedPeriod: "5월", teachingHours: 12,
+        assessmentTiming: "5월 4주", assessmentMethods: ["text", "speech"] as ("text" | "speech")[],
+        assessmentFocus: "선거와 시민 주권의 관계를 설명한다.",
+      }],
+    }],
+    sourceDocuments: [{ name: "6학년 교육과정.csv", mimeType: "text/csv", sha256: "a".repeat(64), documentKind: "grade" as const, extractedAt: now(), detectedStandardCount: 2 }],
+  };
+  assert.equal(validateSchoolPlan(planInput).gradeTemplates[0].units[0].standardCodes.length, 2);
+  const approved = await repo.saveSchoolPlan(owner, planInput);
+  assert.equal(approved.state, "approved");
+  assert.equal(approved.version, 1);
+  await assert.rejects(repo.applySchoolPlan(approved.id, "other-teacher", { templateKey, className: "1반" }), status(404));
+  const term = await repo.applySchoolPlan(approved.id, owner, { templateKey, className: "1반" });
+  assert.equal(term.sourceSchoolPlanId, approved.id);
+  assert.equal(term.sourceTemplateKey, templateKey);
+  assert.equal(term.subject, "사회");
+  const dashboard = await repo.getDashboard(term.id, owner);
+  assert.equal(dashboard.units.length, 1);
+  assert.deepEqual(dashboard.units[0].standards.map(item => item.code), ["6사08-01", "6사08-02"]);
+  await assert.rejects(repo.applySchoolPlan(approved.id, owner, { templateKey, className: "1반" }), status(409));
+  const next = await repo.saveSchoolPlan(owner, { ...planInput, schoolBasics: { ...planInput.schoolBasics, vision: "질문·협력·성장을 연결하는 교육" } });
+  assert.equal(next.version, 2);
+  const history = await repo.listSchoolPlans(owner);
+  assert.equal(history.find(item => item.id === approved.id)?.state, "retired");
+  assert.equal(history.find(item => item.id === next.id)?.state, "approved");
+  const audits = await pg.query<{ event_type: string }>("SELECT event_type FROM curriculum_audit_events WHERE owner_id = $1 AND event_type LIKE 'school%' ORDER BY created_at", [owner]);
+  assert.deepEqual(audits.rows.map(item => item.event_type), ["school.created", "school_plan.approved", "school_plan.applied", "school_plan.approved"]);
 });
 
 test("교육과정 문항 AI 생성 요청·성공·실패·중복 재사용 이력을 보존", async () => {

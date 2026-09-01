@@ -17,6 +17,14 @@ import {
   validateUnit,
 } from "../lib/growth-domain";
 import type { TermInput } from "../lib/growth-domain";
+import {
+  validateApplySchoolPlan,
+  validateSchool,
+  validateSchoolPlan,
+  type GradePlanTemplate,
+  type SchoolBasics,
+  type SourceDocument,
+} from "../lib/school-curriculum-domain";
 import type { Query } from "./repository";
 
 const timestamp = (value: unknown) => value instanceof Date ? value.toISOString() : String(value);
@@ -31,10 +39,37 @@ export type CurriculumTermRecord = {
   className: string;
   subject: TermInput["subject"];
   status: "planning" | "active" | "closed";
+  sourceSchoolPlanId: string | null;
+  sourceTemplateKey: string | null;
   createdAt: string;
   unitCount: number;
   studentCount: number;
   evidenceCount: number;
+};
+
+export type SchoolRecord = {
+  id: string;
+  name: string;
+  region: string;
+  schoolCode: string | null;
+  role: "admin" | "editor" | "viewer";
+  createdAt: string;
+};
+
+export type SchoolCurriculumPlanRecord = {
+  id: string;
+  schoolId: string;
+  schoolName: string;
+  schoolYear: number;
+  version: number;
+  state: "draft" | "approved" | "retired";
+  schoolBasics: SchoolBasics;
+  gradeTemplates: GradePlanTemplate[];
+  sourceDocuments: SourceDocument[];
+  createdBy: string;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  createdAt: string;
 };
 
 export type UnitStandardRecord = {
@@ -306,7 +341,7 @@ export type CurriculumWorkflowRecord = {
   semesterJudgements: Array<SemesterJudgementRecord & { studentName: string }>;
 };
 
-const termColumns = `t.id, t.owner_id AS "ownerId", t.school_year AS "schoolYear", t.semester, t.grade, t.class_name AS "className", t.subject, t.status, t.created_at AS "createdAt"`;
+const termColumns = `t.id, t.owner_id AS "ownerId", t.school_year AS "schoolYear", t.semester, t.grade, t.class_name AS "className", t.subject, t.status, t.source_school_plan_id AS "sourceSchoolPlanId", t.source_template_key AS "sourceTemplateKey", t.created_at AS "createdAt"`;
 const termRecord = (row: Record<string, unknown>) => ({
   ...row,
   schoolYear: number(row.schoolYear),
@@ -319,6 +354,15 @@ const termRecord = (row: Record<string, unknown>) => ({
 }) as CurriculumTermRecord;
 
 const nullableNumber = (value: unknown) => value === null || value === undefined ? null : number(value);
+const schoolPlanColumns = (state = "p.state") => `p.id, p.school_id AS "schoolId", s.name AS "schoolName", p.school_year AS "schoolYear", p.version, ${state} AS state, p.school_basics AS "schoolBasics", p.grade_templates AS "gradeTemplates", p.source_documents AS "sourceDocuments", p.created_by AS "createdBy", p.approved_by AS "approvedBy", p.approved_at AS "approvedAt", p.created_at AS "createdAt"`;
+const schoolRecord = (row: Record<string, unknown>) => ({ ...row, createdAt: timestamp(row.createdAt) }) as SchoolRecord;
+const schoolPlanRecord = (row: Record<string, unknown>) => ({
+  ...row,
+  schoolYear: number(row.schoolYear),
+  version: number(row.version),
+  approvedAt: row.approvedAt ? timestamp(row.approvedAt) : null,
+  createdAt: timestamp(row.createdAt),
+}) as SchoolCurriculumPlanRecord;
 const aiSuggestionRecord = (row: Record<string, unknown>) => ({
   ...row,
   confidence: number(row.confidence),
@@ -336,8 +380,168 @@ export function createGrowthRepository(query: Query) {
     return termRecord(rows[0]);
   }
 
+  async function getSchoolPlan(id: string, ownerId: string) {
+    const rows = await query(`SELECT ${schoolPlanColumns("CASE WHEN active.plan_id = p.id THEN 'approved' WHEN p.state = 'approved' THEN 'retired' ELSE p.state END")}
+      FROM school_curriculum_plans p
+      JOIN schools s ON s.id = p.school_id
+      JOIN school_members member ON member.school_id = s.id AND member.teacher_id = $2
+      LEFT JOIN school_curriculum_active_plans active ON active.school_id = p.school_id AND active.school_year = p.school_year
+      WHERE p.id = $1`, [id, ownerId]);
+    if (!rows[0]) throw new AppError(404, "학교 교육과정 계획을 찾을 수 없거나 접근 권한이 없습니다.");
+    return schoolPlanRecord(rows[0]);
+  }
+
   return {
     getOwnedTerm,
+
+    async listSchools(ownerId: string) {
+      const rows = await query(`SELECT s.id, s.name, s.region, s.school_code AS "schoolCode", member.role, s.created_at AS "createdAt"
+        FROM schools s JOIN school_members member ON member.school_id = s.id
+        WHERE member.teacher_id = $1 ORDER BY s.name`, [ownerId]);
+      return rows.map(schoolRecord);
+    },
+
+    async createSchool(ownerId: string, input: unknown) {
+      if (!ownerId) throw new AppError(401, "교사 로그인이 필요합니다.");
+      const value = validateSchool(input);
+      const id = randomUUID();
+      const rows = await query(`WITH inserted AS (
+        INSERT INTO schools (id, name, region, school_code, created_by)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (created_by, name) DO NOTHING
+        RETURNING *
+      ), member AS (
+        INSERT INTO school_members (school_id, teacher_id, role)
+        SELECT id, $5, 'admin' FROM inserted
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $6, $5, $5, 'school.created', 'school', id, jsonb_build_object('name', name, 'region', region) FROM inserted
+      )
+      SELECT id, name, region, school_code AS "schoolCode", 'admin' AS role, created_at AS "createdAt" FROM inserted`,
+      [id, value.name, value.region, value.schoolCode ?? null, ownerId, randomUUID()]);
+      if (!rows[0]) throw new AppError(409, "같은 이름의 학교가 이미 등록되어 있습니다.");
+      return schoolRecord(rows[0]);
+    },
+
+    async listSchoolPlans(ownerId: string) {
+      const rows = await query(`SELECT ${schoolPlanColumns("CASE WHEN active.plan_id = p.id THEN 'approved' WHEN p.state = 'approved' THEN 'retired' ELSE p.state END")}
+        FROM school_curriculum_plans p
+        JOIN schools s ON s.id = p.school_id
+        JOIN school_members member ON member.school_id = s.id
+        LEFT JOIN school_curriculum_active_plans active ON active.school_id = p.school_id AND active.school_year = p.school_year
+        WHERE member.teacher_id = $1
+        ORDER BY p.school_year DESC, s.name, p.version DESC`, [ownerId]);
+      return rows.map(schoolPlanRecord);
+    },
+
+    async saveSchoolPlan(ownerId: string, input: unknown) {
+      const value = validateSchoolPlan(input);
+      const id = randomUUID();
+      const rows = await query(`WITH member AS (
+        SELECT school.id
+        FROM schools school JOIN school_members membership ON membership.school_id = school.id
+        WHERE school.id = $1 AND membership.teacher_id = $2 AND membership.role IN ('admin', 'editor')
+      ), next_version AS (
+        SELECT member.id AS school_id, coalesce(max(plan.version), 0) + 1 AS version
+        FROM member LEFT JOIN school_curriculum_plans plan ON plan.school_id = member.id AND plan.school_year = $3
+        GROUP BY member.id
+      ), inserted AS (
+        INSERT INTO school_curriculum_plans (
+          id, school_id, school_year, version, state, school_basics, grade_templates,
+          source_documents, created_by, approved_by, approved_at
+        )
+        SELECT $5, school_id, $3, version, $4, $6::jsonb, $7::jsonb, $8::jsonb, $2,
+          CASE WHEN $4 = 'approved' THEN $2 ELSE NULL END,
+          CASE WHEN $4 = 'approved' THEN now() ELSE NULL END
+        FROM next_version RETURNING *
+      ), activated AS (
+        INSERT INTO school_curriculum_active_plans (school_id, school_year, plan_id)
+        SELECT school_id, school_year, id FROM inserted WHERE state = 'approved'
+        ON CONFLICT (school_id, school_year) DO UPDATE
+          SET plan_id = EXCLUDED.plan_id, updated_at = now()
+        RETURNING plan_id
+      ), retired AS (
+        UPDATE school_curriculum_plans plan SET state = 'retired'
+        FROM inserted
+        WHERE inserted.state = 'approved' AND plan.school_id = inserted.school_id
+          AND plan.school_year = inserted.school_year AND plan.id <> inserted.id AND plan.state = 'approved'
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $9, $2, $2, CASE WHEN state = 'approved' THEN 'school_plan.approved' ELSE 'school_plan.drafted' END,
+          'school_curriculum_plan', id, jsonb_build_object('schoolId', school_id, 'schoolYear', school_year, 'version', version)
+        FROM inserted
+      )
+      SELECT ${schoolPlanColumns()}
+      FROM inserted p JOIN schools s ON s.id = p.school_id`, [
+        value.schoolId, ownerId, value.schoolYear, value.state, id,
+        JSON.stringify(value.schoolBasics), JSON.stringify(value.gradeTemplates),
+        JSON.stringify(value.sourceDocuments), randomUUID(),
+      ]);
+      if (!rows[0]) throw new AppError(404, "학교를 찾을 수 없거나 계획을 저장할 권한이 없습니다.");
+      return schoolPlanRecord(rows[0]);
+    },
+
+    async applySchoolPlan(planId: string, ownerId: string, input: unknown) {
+      const value = validateApplySchoolPlan(input);
+      const plan = await getSchoolPlan(planId, ownerId);
+      if (plan.state !== "approved") throw new AppError(409, "검토 완료·확정된 학교 계획만 학급에 적용할 수 있습니다.");
+      const template = plan.gradeTemplates.find(item => item.key === value.templateKey);
+      if (!template) throw new AppError(404, "적용할 학년·학기·교과 계획을 찾을 수 없습니다.");
+      const units = template.units.map(unit => {
+        const validated = validateUnit({ orderIndex: unit.orderIndex, title: unit.title, standardCodes: unit.standardCodes }, template);
+        return {
+          id: randomUUID(), order_index: validated.orderIndex, title: validated.title,
+          standards: validated.standards.map((standard, index) => ({
+            id: randomUUID(), code: standard.code, content: standard.content, domain: standard.domain, position: index + 1,
+          })),
+        };
+      });
+      const termId = randomUUID();
+      const rows = await query(`WITH authorized AS (
+        SELECT plan.id, plan.school_year
+        FROM school_curriculum_plans plan
+        JOIN school_members member ON member.school_id = plan.school_id
+        JOIN school_curriculum_active_plans active ON active.plan_id = plan.id
+        WHERE plan.id = $2 AND member.teacher_id = $1
+      ), inserted_term AS (
+        INSERT INTO curriculum_terms (
+          id, owner_id, school_year, semester, grade, class_name, subject,
+          source_school_plan_id, source_template_key
+        )
+        SELECT $4, $1, authorized.school_year, $9, $10, $5, $11, authorized.id, $3
+        FROM authorized
+        ON CONFLICT (owner_id, school_year, semester, grade, class_name, subject) DO NOTHING
+        RETURNING *
+      ), unit_data AS (
+        SELECT * FROM jsonb_to_recordset($6::jsonb)
+          AS item(id uuid, order_index smallint, title text, standards jsonb)
+      ), inserted_units AS (
+        INSERT INTO curriculum_units (id, term_id, order_index, title)
+        SELECT data.id, term.id, data.order_index, data.title
+        FROM inserted_term term CROSS JOIN unit_data data
+        RETURNING *
+      ), inserted_standards AS (
+        INSERT INTO unit_standards (id, unit_id, standard_code, standard_content, domain, position)
+        SELECT standard.id, unit.id, standard.code, standard.content, standard.domain, standard.position
+        FROM inserted_units unit
+        JOIN unit_data data ON data.id = unit.id
+        CROSS JOIN LATERAL jsonb_to_recordset(data.standards)
+          AS standard(id uuid, code text, content text, domain text, position smallint)
+        RETURNING id
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $7, $1, $1, 'school_plan.applied', 'curriculum_term', id,
+          jsonb_build_object('planId', $2::uuid, 'templateKey', $3::text, 'unitCount', $8::int)
+        FROM inserted_term
+      )
+      SELECT ${termColumns}, $8::int AS "unitCount", 0::int AS "studentCount", 0::int AS "evidenceCount"
+      FROM inserted_term t`, [
+        ownerId, planId, template.key, termId, value.className, JSON.stringify(units),
+        randomUUID(), units.length, template.semester, template.grade, template.subject,
+      ]);
+      if (!rows[0]) throw new AppError(409, "같은 학년도·학기·학급·교과 계획이 이미 있거나 적용 권한이 없습니다.");
+      return termRecord(rows[0]);
+    },
 
     async listTerms(ownerId: string) {
       const rows = await query(`SELECT ${termColumns},

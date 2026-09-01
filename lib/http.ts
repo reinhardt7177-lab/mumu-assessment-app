@@ -32,6 +32,32 @@ export async function readMutation(request: Request, maxBytes = 250_000): Promis
   catch { throw new AppError(400, "요청 내용을 읽을 수 없습니다."); }
 }
 
+export async function readFormDataMutation(request: Request, maxBytes = 8_500_000) {
+  const origin = request.headers.get("origin");
+  if (!origin || origin !== new URL(request.url).origin) throw new AppError(403, "허용되지 않은 요청입니다.");
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.startsWith("multipart/form-data;")) throw new AppError(415, "파일 업로드 형식을 확인해 주세요.");
+  const declared = Number(request.headers.get("content-length") ?? 0);
+  if (declared > maxBytes) throw new AppError(413, "업로드 내용이 너무 큽니다.");
+  const reader = request.body?.getReader();
+  if (!reader) throw new AppError(400, "업로드 내용이 없습니다.");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) { await reader.cancel(); throw new AppError(413, "업로드 내용이 너무 큽니다."); }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  try {
+    const copy = new Request(request.url, { method: "POST", headers: { "content-type": contentType }, body: Buffer.concat(chunks) });
+    return await copy.formData();
+  } catch { throw new AppError(400, "업로드한 문서를 읽을 수 없습니다."); }
+}
+
 export function validateId(id: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new AppError(404, "대상을 찾을 수 없습니다.");
   return id;

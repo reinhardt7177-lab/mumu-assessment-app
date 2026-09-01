@@ -16,7 +16,7 @@ export default function CurriculumWorkspace({ initialTerms, defaultSchoolYear }:
   return <div className="curriculum-real">
     <section className="curriculum-real-hero">
       <div><p className="kicker">교육과정에서 학기말 성장 기록까지</p><h1>수업과 평가를<br />하나의 성장 흐름으로.</h1><p>단원별 성취기준과 루브릭을 설계하고, 피드백·추가 학습·재평가 증거를 학기말 종합 판단까지 연결합니다.</p></div>
-      <button type="button" className="create-button" onClick={() => setCreating(true)}>＋ 학기 교육과정 만들기</button>
+      <div className="curriculum-hero-actions"><Link className="school-plan-link" href="/curriculum/setup">학교·학년 계획 가져오기</Link><button type="button" className="create-button" onClick={() => setCreating(true)}>＋ 학기 교육과정 만들기</button></div>
     </section>
 
     <section className="home-metrics curriculum-live-metrics" aria-label="교육과정 성장 평가 현황">

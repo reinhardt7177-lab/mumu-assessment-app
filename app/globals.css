@@ -917,9 +917,80 @@ h3 { font-size: 15px; }
 .semester-cell.level-하 { background: #fff9ec; }
 .semester-cell.empty { color: #829096; background: #fbfcfc; }
 
+.curriculum-hero-actions { flex: 0 0 auto; display: grid; gap: 9px; }
+.curriculum-hero-actions .school-plan-link { min-height: 43px; padding: 0 18px; border: 1px solid rgba(255,255,255,.44); border-radius: 13px; color: white; text-decoration: none; display: grid; place-items: center; font-size: 11px; font-weight: 850; }
+.school-plan-workspace { gap: 20px; }
+.school-plan-hero { min-height: 248px; padding: 38px 42px; border-radius: 26px; color: white; background: radial-gradient(circle at 80% 16%, rgba(107,231,206,.3), transparent 30%), linear-gradient(125deg, #0e2e49, #1a6173 64%, #148c7d); display: flex; align-items: center; justify-content: space-between; gap: 28px; box-shadow: 0 22px 55px rgba(14,44,73,.17); }
+.school-plan-hero h1 { margin: 8px 0 13px; font-size: clamp(31px, 4vw, 48px); line-height: 1.24; letter-spacing: -.045em; }
+.school-plan-hero p:not(.kicker) { max-width: 720px; color: #d9edf1; line-height: 1.75; }
+.school-plan-hero .kicker { color: #8be4d8; }
+.school-plan-hero .outline-button { color: #133b53; background: white; border-color: white; }
+.school-plan-grid { display: grid; grid-template-columns: minmax(280px, .72fr) minmax(0, 1.28fr); gap: 16px; }
+.school-setup-card { padding: 23px; border: 1px solid var(--line); border-radius: 19px; background: white; box-shadow: var(--shadow); display: grid; align-content: start; gap: 16px; }
+.school-setup-card > header, .grade-template-card > header, .school-plan-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.school-setup-card h2 { margin-top: 3px; color: var(--navy); font-size: 19px; }
+.school-setup-card label, .school-basics-editor label, .template-unit-editor label { color: #425b65; display: grid; gap: 7px; font-size: 10px; font-weight: 800; }
+.school-setup-card input, .school-setup-card select, .school-basics-editor input, .school-basics-editor textarea, .template-unit-editor input { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid #d6e0e1; border-radius: 10px; color: #203d4d; background: white; font: inherit; }
+.plan-version-note { padding: 10px 12px; border-radius: 10px; color: #236c64; background: #edf8f5; font-size: 10px; font-weight: 750; }
+.privacy-chip { padding: 6px 9px; border-radius: 999px; color: #0c756b; background: #e3f7f1; font-size: 9px; font-weight: 900; }
+.import-field-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.file-drop { min-height: 77px; padding: 13px 15px; border: 1px dashed #71bcb2; border-radius: 13px; background: #f6fbfa; cursor: pointer; }
+.file-drop input { min-height: auto; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.file-drop span { color: #688087; font-size: 9px; font-weight: 650; }
+.empty-import-state { min-height: 94px; padding: 18px; border: 1px dashed #c8d8d9; border-radius: 13px; display: grid; place-content: center; gap: 4px; text-align: center; color: #62777e; }
+.empty-import-state strong { color: #264959; font-size: 12px; }
+.empty-import-state span { font-size: 9px; }
+.plan-review-section { display: grid; gap: 17px; }
+.plan-review-section .assessment-list-heading > span, .school-plan-history .assessment-list-heading > span { color: #71848a; font-size: 9px; }
+.import-warning-list { display: grid; gap: 6px; }
+.import-warning-list p { padding: 9px 11px; border-radius: 9px; color: #8a5b31; background: #fff5e3; font-size: 9px; font-weight: 750; }
+.school-basics-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.school-basics-editor textarea { min-height: 108px; resize: vertical; line-height: 1.55; }
+.matched-standard-panel { border: 1px solid #cfe1df; border-radius: 13px; background: #f8fcfb; overflow: hidden; }
+.matched-standard-panel summary { padding: 13px 15px; color: #176e66; cursor: pointer; font-size: 10px; font-weight: 850; }
+.matched-standard-panel > div { max-height: 310px; padding: 0 15px 13px; overflow: auto; display: grid; gap: 7px; }
+.matched-standard-panel p { padding: 9px 10px; border-radius: 9px; color: #385660; background: white; display: grid; grid-template-columns: 90px 100px 1fr; gap: 8px; font-size: 9px; line-height: 1.55; }
+.matched-standard-panel strong { color: #0d766b; }
+.matched-standard-panel span { color: #7a898e; }
+.grade-template-list { display: grid; gap: 13px; }
+.grade-template-card { padding: 18px; border: 1px solid #d8e5e4; border-radius: 16px; background: linear-gradient(145deg, #fff, #f8fcfb); display: grid; gap: 13px; }
+.grade-template-card > header span { color: var(--teal-dark); font-size: 9px; font-weight: 900; }
+.grade-template-card h3 { margin-top: 3px; color: var(--navy); font-size: 15px; }
+.template-card-tools { display: flex; align-items: center; gap: 7px; }
+.template-card-tools strong { padding: 6px 9px; border-radius: 999px; color: #0b756b; background: #e3f5f1; font-size: 9px; }
+.template-card-tools button, .remove-unit-button { padding: 6px 8px; border: 1px solid #ead7d2; border-radius: 8px; color: #9b5547; background: #fff9f7; cursor: pointer; font-size: 8px; font-weight: 850; }
+.template-unit-list { display: grid; gap: 9px; }
+.template-unit-editor { padding: 13px; border: 1px solid #e0e8e8; border-radius: 12px; background: white; display: grid; gap: 9px; }
+.template-unit-heading { display: grid; grid-template-columns: 95px 1fr auto; align-items: end; gap: 8px; }
+.template-unit-meta { display: grid; grid-template-columns: .7fr .45fr .7fr 1.45fr; gap: 8px; }
+.remove-unit-button { min-height: 42px; }
+.assessment-method-picker { padding: 10px 11px; border: 1px solid #dce6e5; border-radius: 10px; display: flex; flex-wrap: wrap; gap: 7px 14px; }
+.assessment-method-picker legend { padding: 0 5px; color: #425b65; font-size: 9px; font-weight: 850; }
+.assessment-method-picker label { display: flex; align-items: center; gap: 5px; font-size: 9px; }
+.assessment-method-picker input { width: 15px; min-height: 15px; padding: 0; accent-color: var(--teal); }
+.plan-review-actions { padding-top: 15px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 9px; }
+.plan-review-actions p { max-width: 680px; color: #6a7d83; font-size: 9px; line-height: 1.55; }
+.school-plan-history { display: grid; gap: 15px; }
+.school-plan-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(305px, 1fr)); gap: 12px; }
+.school-plan-card { padding: 18px; border: 1px solid #d9e3e4; border-radius: 15px; background: white; display: grid; align-content: start; gap: 12px; }
+.school-plan-card.approved { border-color: #8dcfc4; box-shadow: inset 0 4px #22a796; }
+.school-plan-card.retired { opacity: .72; background: #f5f7f7; }
+.school-plan-card header span { color: #70838a; font-size: 9px; font-weight: 750; }
+.school-plan-card h3 { margin-top: 3px; color: #173d55; font-size: 14px; }
+.school-plan-card header em { padding: 5px 8px; border-radius: 999px; color: #5d6d73; background: #edf2f2; font-size: 8px; font-style: normal; font-weight: 900; }
+.school-plan-card.approved header em { color: #0b7268; background: #dff5ef; }
+.school-plan-card > p { color: #718187; font-size: 9px; }
+.school-plan-card > div { display: grid; gap: 7px; }
+.school-plan-card > div button { padding: 10px 11px; border: 1px solid #dce6e6; border-radius: 10px; color: #254655; background: #fbfdfd; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; font-size: 10px; font-weight: 850; text-align: left; }
+.school-plan-card > div button small { color: #168178; font-size: 8px; }
+.school-plan-card > div button:disabled { cursor: not-allowed; opacity: .5; }
+
 @media (max-width: 1020px) {
   .evidence-work-list, .feedback-cycle-list { grid-template-columns: 1fr; }
   .semester-matrix-row { grid-template-columns: 120px repeat(auto-fit, minmax(145px, 1fr)); }
+  .school-plan-grid { grid-template-columns: 1fr; }
+  .import-field-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .school-basics-editor { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 740px) {
@@ -934,4 +1005,11 @@ h3 { font-size: 15px; }
   .field-row.three { grid-template-columns: 1fr; }
   .form-step { width: 28px; height: 28px; }
   .semester-evidence-list fieldset { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .curriculum-hero-actions, .school-plan-hero .outline-button { width: 100%; }
+  .school-plan-hero { min-height: 0; padding: 27px 22px; align-items: stretch; flex-direction: column; }
+  .school-plan-hero h1 { font-size: 30px; }
+  .import-field-grid, .template-unit-heading, .template-unit-meta, .matched-standard-panel p { grid-template-columns: 1fr; }
+  .template-card-tools { align-items: flex-end; flex-direction: column; }
+  .plan-review-actions { grid-template-columns: 1fr; }
+  .plan-review-actions button { width: 100%; }
 }
