@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import AchievementStandardPicker, { type AchievementStandard } from "../achievement-standard-picker";
 
-type View = "assessments" | "review" | "respond" | "formative";
+type View = "curriculum" | "assessments" | "review" | "respond" | "formative";
 type ResponseMode = "text" | "photo" | "speech";
 type SourceMode = "text" | "audio" | "image";
 type QuestionKind = "서술형" | "선택형" | "말하기";
@@ -482,19 +482,204 @@ function FormativeAnalysis() {
   );
 }
 
+type MasterLevel = "상" | "중" | "하";
+
+const curriculumUnits = [
+  {
+    id: "democracy",
+    order: "1단원",
+    title: "민주주의와 시민 참여",
+    standards: "6사08-01 · 6사08-02",
+    standardText: "[6사08-01] 민주주의에서 선거의 의미와 역할을 파악하고, 시민의 주권 행사를 위해 선거에 참여하는 태도를 기른다. [6사08-02] 민주 국가에서 국회, 행정부, 법원이 하는 일에 대해 이해하고, 각 국가기관의 권력을 분립하는 이유를 탐색한다.",
+    state: "피드백 진행",
+    rubricReady: true,
+    assessed: 24,
+    high: 8,
+    middle: 11,
+    low: 5,
+  },
+  {
+    id: "media",
+    order: "2단원",
+    title: "미디어와 민주 시민",
+    standards: "6사08-03",
+    standardText: "[6사08-03] 민주주의에서 미디어의 의미와 역할을 이해하고, 여러 가지 미디어의 내용을 비판적으로 분석하여 올바르게 이용하는 태도를 기른다.",
+    state: "평가 설계",
+    rubricReady: false,
+    assessed: 0,
+    high: 0,
+    middle: 0,
+    low: 0,
+  },
+  {
+    id: "world",
+    order: "3단원",
+    title: "지구, 대륙 그리고 국가들",
+    standards: "6사09-01 · 6사09-02",
+    standardText: "[6사09-01] 세계를 표현하는 다양한 공간 자료의 특징을 이해하고, 지구본과 세계지도에서 위치를 표현하는 방법을 익힌다. [6사09-02] 세계 주요 대륙과 대양을 파악하고, 우리나라 및 세계 여러 국가의 위치와 영토의 특징을 이해한다.",
+    state: "수업 예정",
+    rubricReady: false,
+    assessed: 0,
+    high: 0,
+    middle: 0,
+    low: 0,
+  },
+];
+
+const growthStudents = [
+  { name: "김민지", first: "중" as MasterLevel, current: "상" as MasterLevel, evidence: 3, gap: "선거와 시민 주권의 관계를 구체 사례로 설명하기", next: "미디어 자료의 관점을 비교하는 확장 학습" },
+  { name: "이서준", first: "하" as MasterLevel, current: "중" as MasterLevel, evidence: 4, gap: "국가기관별 역할을 권력 분립의 이유와 연결하기", next: "역할 카드 분류 후 새로운 사례로 재설명" },
+  { name: "박하윤", first: "상" as MasterLevel, current: "상" as MasterLevel, evidence: 3, gap: "서로 다른 자료의 관점을 비교해 판단하기", next: "서로 다른 선거 공약을 분석하는 확장 탐구" },
+  { name: "최지호", first: "하" as MasterLevel, current: "하" as MasterLevel, evidence: 2, gap: "선거를 절차가 아닌 시민의 주권 행사로 이해하기", next: "소집단 재학습 후 그림 자료를 활용한 구술 재평가" },
+];
+
+const rubricDescriptors = [
+  {
+    criterion: "개념과 원리",
+    high: "선거의 의미와 역할을 시민 주권과 연결하고, 권력 분립이 필요한 이유를 국가기관의 관계로 설명한다.",
+    middle: "선거와 국가기관의 역할을 설명하고, 시민 참여 또는 권력 분립의 중요성을 사례와 연결한다.",
+    low: "선거를 투표 절차로 설명하거나 국가기관의 이름을 제시하지만, 시민 주권·권력 분립과의 연결 근거는 드러나지 않는다.",
+  },
+  {
+    criterion: "근거 활용",
+    high: "자료에서 관련 사실을 선택하고, 그 사실이 자신의 설명을 뒷받침하는 이유를 밝힌다.",
+    middle: "관련 사례나 자료를 제시하고 주장과 연결하지만, 근거가 설명을 뒷받침하는 이유는 부분적으로 드러난다.",
+    low: "사례를 나열하거나 자료의 문장을 옮기지만, 주장과 근거의 관계는 드러나지 않는다.",
+  },
+  {
+    criterion: "민주적 참여 태도",
+    high: "공동의 문제에서 서로 다른 의견을 비교하고, 시민으로서 가능한 참여 방법을 이유와 함께 제안한다.",
+    middle: "서로 다른 의견이 있음을 알고, 시민 참여 방법을 한 가지 제안한다.",
+    low: "자신의 의견은 말하지만 다른 관점이나 참여 방법은 아직 제시하지 않는다.",
+  },
+];
+
+function LevelBadge({ level }: { level: MasterLevel }) {
+  return <span className={"master-level level-" + level}>{level}</span>;
+}
+
+function CurriculumMaster({ onCreateAssessment }: { onCreateAssessment: () => void }) {
+  const [unitId, setUnitId] = useState("democracy");
+  const [studentIndex, setStudentIndex] = useState(0);
+  const [cycleRecorded, setCycleRecorded] = useState(false);
+  const unit = curriculumUnits.find((item) => item.id === unitId) ?? curriculumUnits[0];
+  const student = growthStudents[studentIndex];
+  const currentLevel = cycleRecorded && student.current === "하" ? "중" : student.current;
+
+  return (
+    <div className="curriculum-master">
+      <section className="master-hero">
+        <div>
+          <span className="master-eyebrow">교육과정 → 수업 → 평가 → 성장 → 기록</span>
+          <h2>교육과정 평가 마스터</h2>
+          <p>성취기준별 수행 증거를 단원마다 쌓고, 피드백과 추가 학습·재평가를 거쳐 학기말 성장 결과로 연결합니다.</p>
+        </div>
+        <div className="master-hero-actions"><span>상·중·하 = 준거 수준 · 석차 아님</span><button type="button" onClick={onCreateAssessment}>＋ 단원 평가 설계</button></div>
+      </section>
+
+      <section className="master-cycle" aria-label="교육과정 평가 순환 과정">
+        {[
+          ["1", "성취기준 해석", "관찰 가능한 성공 기준"],
+          ["2", "단원 평가", "여러 방식의 수행 증거"],
+          ["3", "루브릭 판단", "기준별 상·중·하"],
+          ["4", "피드백·추가 학습", "격차에 맞춘 다음 수업"],
+          ["5", "재평가", "성장한 독립 수행 확인"],
+          ["6", "학기말 종합", "증거 기반 교사 판단"],
+        ].map(([number, label, note], index) => <article key={number}><span>{number}</span><div><strong>{label}</strong><small>{note}</small></div>{index < 5 ? <b>→</b> : null}</article>)}
+      </section>
+
+      <section className="master-metrics" aria-label="교육과정 평가 현황">
+        <article><span>성취기준</span><strong>9</strong><small>이번 학기 평가 계획</small></article>
+        <article><span>수집된 수행 증거</span><strong>68</strong><small>글·관찰·구술·대화</small></article>
+        <article><span>추가 학습 진행</span><strong>5명</strong><small>격차별 맞춤 지원</small></article>
+        <article className="growth-metric"><span>수준 상승</span><strong>7명</strong><small>재평가에서 확인</small></article>
+      </section>
+
+      <section className="master-section">
+        <div className="master-section-heading"><div><p className="kicker">교육과정 지도</p><h2>단원별 성취기준과 평가 진행</h2></div><button className="outline-button">학기 평가 계획 보기</button></div>
+        <div className="unit-map">
+          {curriculumUnits.map((item) => (
+            <button type="button" key={item.id} className={unitId === item.id ? "selected" : ""} onClick={() => setUnitId(item.id)}>
+              <span>{item.order}<em>{item.state}</em></span>
+              <strong>{item.title}</strong>
+              <small>{item.standards}</small>
+              {item.assessed > 0 ? <div className="unit-levels"><i className="high" style={{ width: item.high / item.assessed * 100 + "%" }} /><i className="middle" style={{ width: item.middle / item.assessed * 100 + "%" }} /><i className="low" style={{ width: item.low / item.assessed * 100 + "%" }} /></div> : <div className="unit-empty">평가 전</div>}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <div className="master-dashboard-grid">
+        <section className="master-section rubric-overview">
+          <div className="master-section-heading"><div><p className="kicker">{unit.standards}</p><h2>{unit.title} · 준거참조 루브릭</h2></div><span className="validity-chip">성취기준 정렬 확인</span></div>
+          <p className="master-standard">{unit.standardText}</p>
+          {unit.rubricReady ? (
+            <>
+              <div className="master-rubric-table" role="table" aria-label="성취기준 루브릭">
+                <div className="rubric-table-head" role="row"><strong>평가 요소</strong><span>상</span><span>중</span><span>하</span></div>
+                {rubricDescriptors.map((row) => <div className="rubric-table-row" role="row" key={row.criterion}><strong>{row.criterion}</strong><p>{row.high}</p><p>{row.middle}</p><p>{row.low}</p></div>)}
+              </div>
+              <div className="rubric-note"><strong>판단 원칙</strong><span>수행물 하나의 총점이 아니라 기준별 근거를 따로 판단합니다. 표현 방식은 성취기준이 요구하지 않는 한 수준을 낮추는 이유로 사용하지 않습니다.</span></div>
+            </>
+          ) : (
+            <div className="unit-planning-empty">
+              <span>루브릭 설계 전</span>
+              <strong>이 성취기준의 관찰 가능한 성공 기준부터 설계합니다.</strong>
+              <p>성취기준을 평가 요소로 풀고, 각 요소의 상·중·하 수행 기술문과 평가 문항을 함께 만듭니다.</p>
+              <button type="button" className="primary-button" onClick={onCreateAssessment}>이 단원 평가 설계하기</button>
+            </div>
+          )}
+        </section>
+
+        <aside className="master-section student-growth-panel">
+          <div className="master-section-heading"><div><p className="kicker">학생 성장 기록</p><h2>피드백에서 재평가까지</h2></div><select aria-label="학생 선택" value={studentIndex} onChange={(event) => { setStudentIndex(Number(event.target.value)); setCycleRecorded(false); }}>{growthStudents.map((item, index) => <option value={index} key={item.name}>{item.name}</option>)}</select></div>
+          <div className="student-level-change"><div><small>최초 수행</small><LevelBadge level={student.first} /></div><b>→</b><div><small>현재 확인 수준</small><LevelBadge level={currentLevel} /></div><span>증거 {student.evidence + (cycleRecorded ? 1 : 0)}개</span></div>
+          <ol className="learning-cycle-log">
+            <li className="done"><span>1</span><div><strong>단원 수행 증거</strong><p>서술형 답안과 수업 관찰 기록을 기준별로 연결했습니다.</p></div></li>
+            <li className="done"><span>2</span><div><strong>핵심 격차 진단</strong><p>{student.gap}</p><em>개념·절차·표현 격차를 구분해 기록</em></div></li>
+            <li className="active"><span>3</span><div><strong>추가 학습</strong><p>{student.next}</p></div></li>
+            <li className={cycleRecorded ? "done" : ""}><span>4</span><div><strong>재평가 증거</strong><p>{cycleRecorded ? "새로운 과제에서 학생이 도움 없이 설명한 근거를 추가했습니다." : "같은 답을 외우는 재시험이 아니라 새로운 맥락의 독립 수행을 확인합니다."}</p></div></li>
+          </ol>
+          <button type="button" className="primary-button full-button" onClick={() => setCycleRecorded(true)}>{cycleRecorded ? "성장 증거 기록됨" : "＋ 추가 학습·재평가 기록"}</button>
+        </aside>
+      </div>
+
+      <section className="master-section semester-section">
+        <div className="master-section-heading"><div><p className="kicker">학기말 종합 평가 미리보기</p><h2>성취기준별 증거를 모아 학생의 성장을 설명합니다</h2></div><button className="primary-button">학기말 종합 판단 열기</button></div>
+        <div className="semester-grid">
+          <div className="student-growth-list">
+            {growthStudents.map((item, index) => <button type="button" key={item.name} className={studentIndex === index ? "selected" : ""} onClick={() => { setStudentIndex(index); setCycleRecorded(false); }}><span>{item.name.slice(1)}</span><div><strong>{item.name}</strong><small>수행 증거 {item.evidence}개</small></div><LevelBadge level={item.current} /><em>{item.first !== item.current ? item.first + "→" + item.current + " 성장" : "수준 유지"}</em></button>)}
+          </div>
+          <div className="semester-evidence">
+            <div className="semester-rule"><span>종합 판단 원칙</span><strong>최근의 독립 수행 + 반복 확인 + 교사 근거 기록</strong><p>단순 평균이나 한 번의 최고 점수로 결정하지 않으며, 근거가 부족하면 “판단 보류”로 남깁니다.</p></div>
+            {[
+              ["6사08-01", "선거와 시민 주권", student.current, "3개", "상승"],
+              ["6사08-02", "국가기관과 권력 분립", "중", "2개", "유지"],
+              ["6사08-03", "미디어 비판적 분석", "판단 전", "0개", "평가 예정"],
+            ].map(([code, label, level, evidence, trend]) => <div className="semester-standard-row" key={code}><span>{code}</span><strong>{label}</strong><em>{evidence}</em>{level === "판단 전" ? <b className="pending-level">판단 전</b> : <LevelBadge level={level as MasterLevel} />}<small>{trend}</small></div>)}
+            <blockquote>“민주주의의 핵심 개념을 사례와 연결해 설명하는 수준이 향상되었습니다. 권력 분립은 기관별 역할을 넘어 상호 견제의 이유를 설명하는 추가 경험이 필요합니다.”</blockquote>
+            <p className="teacher-final-note">AI는 근거를 정리하고 문장 초안을 제안합니다. <strong>학기말 종합 수준과 서술은 교사가 최종 확정합니다.</strong></p>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function Home() {
-  const [view, setView] = useState<View>("assessments");
-  const pageTitle = useMemo(() => ({ assessments: "평가 관리", review: "평가 검토", respond: "학생 응답", formative: "형성평가 분석" })[view], [view]);
+  const [view, setView] = useState<View>("curriculum");
+  const pageTitle = useMemo(() => ({ curriculum: "교육과정 성장 평가", assessments: "단원 평가 설계", review: "루브릭 검토", respond: "학생 평가 화면", formative: "학습 과정 분석" })[view], [view]);
 
   return (
     <main className="app-shell">
       <aside className="side-navigation">
-        <button className="brand-lockup" onClick={() => setView("assessments")} aria-label="Mumu 평가 홈"><span>M</span><strong>Mumu<br />평가</strong></button>
+        <button className="brand-lockup" onClick={() => setView("curriculum")} aria-label="Mumu 평가 홈"><span>M</span><strong>Mumu<br />평가</strong></button>
         <nav aria-label="주요 메뉴">
-          <NavButton active={view === "assessments"} glyph="⌂" label="평가 관리" onClick={() => setView("assessments")} />
-          <NavButton active={view === "review"} glyph="▣" label="교사 검토" onClick={() => setView("review")} />
-          <NavButton active={view === "respond"} glyph="✎" label="학생 응답" onClick={() => setView("respond")} />
-          <NavButton active={view === "formative"} glyph="◌" label="형성 분석" onClick={() => setView("formative")} />
+          <NavButton active={view === "curriculum"} glyph="◎" label="교육과정" onClick={() => setView("curriculum")} />
+          <NavButton active={view === "assessments"} glyph="▤" label="단원 평가" onClick={() => setView("assessments")} />
+          <NavButton active={view === "review"} glyph="▣" label="루브릭 검토" onClick={() => setView("review")} />
+          <NavButton active={view === "formative"} glyph="↗" label="성장 기록" onClick={() => setView("formative")} />
+          <NavButton active={view === "respond"} glyph="✎" label="학생 화면" onClick={() => setView("respond")} />
         </nav>
         <div className="nav-spacer" />
         <div className="teacher-profile"><span>이</span><small>이준용<br />선생님</small></div>
@@ -502,9 +687,10 @@ export default function Home() {
 
       <section className="app-content">
         <header className="topbar">
-          <div><p className="kicker">6학년 사회 · 민주주의의 발전</p><h1>{pageTitle}</h1></div>
+          <div><p className="kicker">2026학년도 · 6학년 1학기 사회</p><h1>{pageTitle}</h1></div>
           <div className="top-actions"><span className="sync-state"><i /> 모든 변경사항 저장됨</span><button aria-label="알림">♢<b>2</b></button></div>
         </header>
+        {view === "curriculum" && <CurriculumMaster onCreateAssessment={() => setView("assessments")} />}
         {view === "assessments" && <AssessmentHome onOpenReview={() => setView("review")} onOpenAnalysis={() => setView("formative")} />}
         {view === "review" && <TeacherReview />}
         {view === "respond" && <StudentResponse />}
