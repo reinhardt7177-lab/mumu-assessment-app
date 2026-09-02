@@ -11,7 +11,9 @@ const coreSchema = await readFile(new URL("../db/migrations/0001_assessment_core
 const growthSchema = await readFile(new URL("../db/migrations/0002_curriculum_growth.sql", import.meta.url), "utf8");
 const aiSchema = await readFile(new URL("../db/migrations/0003_ai_assessment_suggestions.sql", import.meta.url), "utf8");
 const bridgeSchema = await readFile(new URL("../db/migrations/0004_assessment_growth_bridge.sql", import.meta.url), "utf8");
-const schema = [coreSchema, growthSchema, aiSchema, bridgeSchema].join("\n");
+const schoolPlanSchema = await readFile(new URL("../db/migrations/0005_school_curriculum_plans.sql", import.meta.url), "utf8");
+const classroomSchema = await readFile(new URL("../db/migrations/0006_teacher_classes_and_distributions.sql", import.meta.url), "utf8");
+const schema = [coreSchema, growthSchema, aiSchema, bridgeSchema, schoolPlanSchema, classroomSchema].join("\n");
 let pg: PGlite;
 let repo: ReturnType<typeof createAssessmentRepository>;
 const adapter = (db: PGlite): Query => async <T extends Record<string, unknown>>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows;

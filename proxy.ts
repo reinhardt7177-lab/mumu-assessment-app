@@ -6,6 +6,5 @@ export default process.env.CLERK_SECRET_KEY && process.env.NEXT_PUBLIC_CLERK_PUB
   ? clerkMiddleware()
   : () => NextResponse.next();
 
-export const config = {
-  matcher: ["/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)", "/(api|trpc)(.*)"],
-};
+// Run on every request. Route handlers still perform their own teacher checks,
+// and avoiding a complex negative-lookahead keeps both Next.js and vinext aligned.

@@ -4,7 +4,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Answers, AssessmentDefinition, AttemptRecord, ReviewRecord } from "../lib/assessment-domain";
 import { requestJson, RequestError } from "../lib/client-api";
 
-type Exam = { id: string; status: "published" | "closed"; definition: AssessmentDefinition; rosterRequired: boolean };
+type Exam = {
+  id: string;
+  status: "published" | "closed";
+  definition: AssessmentDefinition;
+  rosterRequired: boolean;
+  distribution: {
+    id: string; classId: string; className: string; schoolYear: number; grade: number;
+    instructions: string; closesAt: string | null; totalStudents: number;
+  } | null;
+};
 type ExamPayload = { assessment: Exam; attempt: AttemptRecord | null; result: ReviewRecord | null };
 
 export default function StudentExam({ code }: { code: string }) {
@@ -104,7 +113,7 @@ export default function StudentExam({ code }: { code: string }) {
       {loading && <p role="status">평가를 불러오는 중이에요…</p>}
       {error && <div className="ai-generation-error" role="alert">{error}</div>}
       {exam && <>
-        <section className="exam-title-card"><div><p className="kicker">{exam.definition.subject} · {exam.definition.type}</p><h1>{exam.definition.title}</h1><p>{exam.definition.learningGoal}</p></div><strong>{completed} / {exam.definition.questions.length}문항</strong></section>
+        <section className="exam-title-card"><div><p className="kicker">{exam.distribution ? `${exam.distribution.schoolYear}학년도 · ${exam.distribution.grade}학년 ${exam.distribution.className}` : `${exam.definition.subject} · ${exam.definition.type}`}</p><h1>{exam.definition.title}</h1><p>{exam.definition.learningGoal}</p>{exam.distribution?.instructions ? <p className="student-exam-instructions">{exam.distribution.instructions}</p> : null}</div><strong>{completed} / {exam.definition.questions.length}문항</strong></section>
         {!attempt && exam.status === "published" && <section className="response-card student-identification"><h2>누구의 답안인가요?</h2><p>{exam.rosterRequired ? "선생님이 학기 명부에 등록한 학생 참조 번호를 정확히 입력해 주세요." : "선생님이 알려준 번호 또는 별칭만 써주세요."} 이 화면에는 교사용 메뉴가 없어요.</p><label htmlFor="student-label">{exam.rosterRequired ? "학생 참조 번호" : "번호 또는 별칭"}</label><input id="student-label" maxLength={40} value={label} onChange={event => setLabel(event.target.value)} placeholder={exam.rosterRequired ? "예: 6-1-01" : "예: 3반 12번"} autoComplete="off" /><button className="primary-button" onClick={start} disabled={busy || !label.trim()}>{busy ? "참여하는 중…" : "평가 시작하기"}</button></section>}
         {exam.status === "closed" && <p className="wizard-guide">이 평가는 마감되었어요. 저장된 답안과 공개된 결과는 확인할 수 있어요.</p>}
         {notice && <p className="save-notice" role="status">{notice}</p>}

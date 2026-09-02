@@ -14,6 +14,7 @@ const growthSchema = await readFile(new URL("../db/migrations/0002_curriculum_gr
 const aiSchema = await readFile(new URL("../db/migrations/0003_ai_assessment_suggestions.sql", import.meta.url), "utf8");
 const bridgeSchema = await readFile(new URL("../db/migrations/0004_assessment_growth_bridge.sql", import.meta.url), "utf8");
 const schoolPlanSchema = await readFile(new URL("../db/migrations/0005_school_curriculum_plans.sql", import.meta.url), "utf8");
+const classroomSchema = await readFile(new URL("../db/migrations/0006_teacher_classes_and_distributions.sql", import.meta.url), "utf8");
 let pg: PGlite;
 let repo: ReturnType<typeof createGrowthRepository>;
 let assessmentRepo: ReturnType<typeof createAssessmentRepository>;
@@ -28,6 +29,7 @@ before(async () => {
   await pg.exec(aiSchema);
   await pg.exec(bridgeSchema);
   await pg.exec(schoolPlanSchema);
+  await pg.exec(classroomSchema);
   repo = createGrowthRepository(adapter(pg));
   assessmentRepo = createAssessmentRepository(adapter(pg));
 });

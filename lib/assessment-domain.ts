@@ -51,6 +51,10 @@ export type AssessmentRecord = {
   id: string; ownerId: string; shareCode: string; status: "draft" | "published" | "closed";
   definition: AssessmentDefinition; version: number; createdAt: string;
   curriculumLink: { eventId: string; termId: string; unitId: string; unitTitle: string } | null;
+  distribution: null | {
+    id: string; classId: string; className: string; schoolYear: number; grade: number;
+    instructions: string; closesAt: string | null; totalStudents: number;
+  };
   submittedCount: number; pendingCount: number;
 };
 export type Answers = Record<string, string>;
@@ -58,6 +62,7 @@ export type AttemptRecord = {
   id: string; assessmentId: string; studentLabel: string; answers: Answers;
   revision: number; status: "in_progress" | "submitted"; timeSpentSeconds: number;
   curriculumStudentId: string | null;
+  distributionId: string | null; classStudentId: string | null;
   savedAt: string; submittedAt: string | null;
 };
 export type ReviewRecord = {

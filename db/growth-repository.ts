@@ -33,6 +33,7 @@ const number = (value: unknown) => Number(value ?? 0);
 export type CurriculumTermRecord = {
   id: string;
   ownerId: string;
+  classId: string | null;
   schoolYear: number;
   semester: 1 | 2;
   grade: number;
@@ -341,7 +342,7 @@ export type CurriculumWorkflowRecord = {
   semesterJudgements: Array<SemesterJudgementRecord & { studentName: string }>;
 };
 
-const termColumns = `t.id, t.owner_id AS "ownerId", t.school_year AS "schoolYear", t.semester, t.grade, t.class_name AS "className", t.subject, t.status, t.source_school_plan_id AS "sourceSchoolPlanId", t.source_template_key AS "sourceTemplateKey", t.created_at AS "createdAt"`;
+const termColumns = `t.id, t.owner_id AS "ownerId", t.class_id AS "classId", t.school_year AS "schoolYear", t.semester, t.grade, t.class_name AS "className", t.subject, t.status, t.source_school_plan_id AS "sourceSchoolPlanId", t.source_template_key AS "sourceTemplateKey", t.created_at AS "createdAt"`;
 const termRecord = (row: Record<string, unknown>) => ({
   ...row,
   schoolYear: number(row.schoolYear),
@@ -562,19 +563,39 @@ export function createGrowthRepository(query: Query) {
       if (!ownerId) throw new AppError(401, "교사 로그인이 필요합니다.");
       const value = validateTerm(input);
       const id = randomUUID();
+      const roster = value.classId ? await query<{ id: string; studentRef: string; displayName: string }>(`SELECT student.id, student.student_ref AS "studentRef", student.display_name AS "displayName"
+        FROM class_students student JOIN teacher_classes classroom ON classroom.id = student.class_id
+        WHERE classroom.id = $1 AND classroom.owner_id = $2 AND classroom.status = 'active'
+          AND classroom.school_year = $3 AND classroom.grade = $4 AND classroom.name = $5 AND student.active
+        ORDER BY student.student_ref`, [value.classId, ownerId, value.schoolYear, value.grade, value.className]) : [];
+      const students = roster.map(student => ({ id: randomUUID(), class_student_id: student.id, student_ref: student.studentRef, display_name: student.displayName }));
       const rows = await query(`WITH inserted AS (
-        INSERT INTO curriculum_terms AS t (id, owner_id, school_year, semester, grade, class_name, subject)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO curriculum_terms AS t (id, owner_id, class_id, school_year, semester, grade, class_name, subject)
+        SELECT $1, $2, $9::uuid, $3, $4, $5, $6, $7
+        WHERE $9::uuid IS NULL OR EXISTS (
+          SELECT 1 FROM teacher_classes classroom
+          WHERE classroom.id = $9 AND classroom.owner_id = $2 AND classroom.status = 'active'
+            AND classroom.school_year = $3 AND classroom.grade = $5 AND classroom.name = $6
+        )
         ON CONFLICT (owner_id, school_year, semester, grade, class_name, subject) DO NOTHING
         RETURNING *
+      ), student_data AS (
+        SELECT * FROM jsonb_to_recordset($10::jsonb)
+          AS item(id uuid, class_student_id uuid, student_ref text, display_name text)
+      ), synced_students AS (
+        INSERT INTO curriculum_students (id, term_id, class_student_id, student_ref, display_name)
+        SELECT data.id, inserted.id, data.class_student_id, data.student_ref, data.display_name
+        FROM inserted CROSS JOIN student_data data
+        ON CONFLICT DO NOTHING
       ), audit AS (
         INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
         SELECT $8, $2, $2, 'term.created', 'curriculum_term', id, jsonb_build_object('schoolYear', school_year, 'semester', semester, 'grade', grade, 'subject', subject)
         FROM inserted
       )
-      SELECT i.id, i.owner_id AS "ownerId", i.school_year AS "schoolYear", i.semester, i.grade, i.class_name AS "className", i.subject, i.status, i.created_at AS "createdAt"
-      FROM inserted i`, [id, ownerId, value.schoolYear, value.semester, value.grade, value.className, value.subject, randomUUID()]);
-      if (!rows[0]) throw new AppError(409, "같은 학년도·학기·학급·교과의 교육과정이 이미 있습니다.");
+      SELECT i.id, i.owner_id AS "ownerId", i.class_id AS "classId", i.school_year AS "schoolYear", i.semester, i.grade, i.class_name AS "className", i.subject, i.status, i.created_at AS "createdAt",
+        0::int AS "unitCount", $11::int AS "studentCount", 0::int AS "evidenceCount"
+      FROM inserted i`, [id, ownerId, value.schoolYear, value.semester, value.grade, value.className, value.subject, randomUUID(), value.classId ?? null, JSON.stringify(students), students.length]);
+      if (!rows[0]) throw new AppError(409, "같은 학년도·학기·학급·교과가 이미 있거나 선택한 학급 정보가 일치하지 않습니다.");
       return termRecord(rows[0]);
     },
 

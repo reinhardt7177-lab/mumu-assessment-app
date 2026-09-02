@@ -10,6 +10,13 @@ export async function GET(_request: Request, { params }: { params: Promise<{ cod
     const token = (await cookies()).get(`mumu_attempt_${code}`)?.value;
     const [attempt, result] = token ? await Promise.all([repo.getAttempt(code, token), repo.studentResult(code, token)]) : [null, null];
     // Whitelist public fields: no owner, participant list, token hashes or unpublished reviews.
-    return privateJson({ assessment: { id: assessment.id, shareCode: code, status: assessment.status, definition: assessment.definition, rosterRequired: Boolean(assessment.curriculumLink) }, attempt, result });
+    return privateJson({ assessment: {
+      id: assessment.id,
+      shareCode: code,
+      status: assessment.status,
+      definition: assessment.definition,
+      rosterRequired: Boolean(assessment.curriculumLink || assessment.distribution),
+      distribution: assessment.distribution,
+    }, attempt, result });
   } catch (error) { return apiError(error); }
 }

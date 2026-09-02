@@ -11,6 +11,7 @@ const shortText = z.string().trim().min(1).max(80);
 const description = z.string().trim().min(5).max(3000);
 
 export const termInputSchema = z.object({
+  classId: uuid.nullable().optional(),
   schoolYear: z.number().int().min(2022).max(2100),
   semester: z.union([z.literal(1), z.literal(2)]),
   grade: z.number().int().min(1).max(6),

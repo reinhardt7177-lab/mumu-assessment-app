@@ -4,24 +4,30 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import type { AssessmentRecord, AttemptRecord, ReviewRecord } from "../lib/assessment-domain";
+import type { DistributionRecord } from "../db/classroom-repository";
 import { requestJson } from "../lib/client-api";
 
 type Submission = AttemptRecord & { review: ReviewRecord | null };
 const reviewState = { draft: "검토 중", final: "교사 확정", published: "학생 공개" };
 
-export default function AssessmentDetail({ initialAssessment, initialSubmissions }: { initialAssessment: AssessmentRecord; initialSubmissions: Submission[] }) {
+export default function AssessmentDetail({ initialAssessment, initialSubmissions, initialDistribution }: { initialAssessment: AssessmentRecord; initialSubmissions: Submission[]; initialDistribution: DistributionRecord | null }) {
   const [assessment, setAssessment] = useState(initialAssessment);
   const [submissions, setSubmissions] = useState(initialSubmissions);
+  const [distribution, setDistribution] = useState(initialDistribution);
   const [selected, setSelected] = useState<string | null>(null);
   const [origin, setOrigin] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   useEffect(() => { const frame = requestAnimationFrame(() => setOrigin(window.location.origin)); return () => cancelAnimationFrame(frame); }, []);
-  const joinUrl = `${origin}/join/${assessment.shareCode}`;
+  const joinUrl = `${origin}/join/${distribution?.shareCode ?? assessment.shareCode}`;
   const refresh = async () => {
     setBusy(true); setError("");
-    try { const data = await requestJson<{ assessment: AssessmentRecord; submissions: Submission[] }>(`/api/teacher/assessments/${assessment.id}`); setAssessment(data.assessment); setSubmissions(data.submissions); }
+    try {
+      const query = distribution ? `?distribution=${distribution.id}` : "";
+      const data = await requestJson<{ assessment: AssessmentRecord; submissions: Submission[]; distribution: DistributionRecord | null }>(`/api/teacher/assessments/${assessment.id}${query}`);
+      setAssessment(data.assessment); setSubmissions(data.submissions); setDistribution(data.distribution);
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : "결과를 불러오지 못했습니다."); }
     finally { setBusy(false); }
   };
@@ -43,12 +49,13 @@ export default function AssessmentDetail({ initialAssessment, initialSubmissions
   };
   const active = submissions.find(s => s.id === selected);
   return <div className="assessment-home">
-    <section className="detail-heading"><div><p className="kicker">{assessment.definition.subject} · 루브릭 v{assessment.version}</p><h1>{assessment.definition.title}</h1><p>{assessment.definition.learningGoal}</p></div><span className="status-label">{assessment.status === "draft" ? "서버에 저장된 초안" : assessment.status === "published" ? "진행 중" : "마감"}</span></section>
+    <section className="detail-heading"><div><p className="kicker">{assessment.definition.subject} · 루브릭 v{assessment.version}</p><h1>{assessment.definition.title}</h1><p>{assessment.definition.learningGoal}</p></div><span className="status-label">{distribution ? `${distribution.grade}학년 ${distribution.className} · ${distribution.status === "open" ? "진행 중" : "마감"}` : assessment.status === "draft" ? "서버에 저장된 초안" : assessment.status === "published" ? "공개됨" : "마감"}</span></section>
+    {distribution ? <section className="class-result-banner"><div><span>학급별 결과만 보는 중</span><strong>{distribution.schoolYear}학년도 · {distribution.grade}학년 {distribution.className}</strong><p>이 학급의 제출 답안과 검토 결과만 표시됩니다. 다른 학급의 결과와 섞이지 않습니다.</p></div><Link className="outline-button button-link" href={`/classes/${distribution.classId}`}>학급 운영실로 돌아가기 →</Link></section> : null}
     {assessment.curriculumLink ? <section className="curriculum-assessment-banner"><div><span>교육과정 성장평가 연결됨</span><strong>{assessment.curriculumLink.unitTitle}</strong><p>등록 학생의 최종 제출은 원본 수행 증거로 자동 수합됩니다. 점수 결과와 성장 수준은 분리됩니다.</p></div><Link className="outline-button button-link" href={`/curriculum/${assessment.curriculumLink.termId}`}>성장 기록에서 루브릭 판단 →</Link></section> : null}
     {error && <p className="ai-generation-error" role="alert">{error}</p>}{notice && <p className="save-notice" role="status">{notice}</p>}
-    <section className="detail-distribution response-card">{assessment.status === "published" && origin && <QRCodeSVG value={joinUrl} size={148} level="M" marginSize={2} title="이 평가의 학생 시험지 QR" />}<div><h2>{assessment.status === "draft" ? "검토를 마치고 학생에게 공개하세요" : "학생에게는 시험지만 보입니다"}</h2><p>문항 {assessment.definition.questions.length}개 · {assessment.definition.questions.reduce((n, q) => n + q.points, 0)}점 · 학생용 시험 결과 상/중/하</p>{assessment.status === "draft" ? <><p>공개하면 문항·성취기준·루브릭이 잠깁니다.</p><button className="primary-button" disabled={busy} onClick={() => changeStatus("published")}>평가 공개하고 QR 만들기</button></> : <><label>학생 시험지 링크<input value={joinUrl} readOnly aria-label="학생 시험지 링크" /></label><div className="workspace-controls"><button className="outline-button" onClick={copy}>링크 복사</button><a className="outline-button button-link" href={joinUrl} target="_blank" rel="noreferrer">학생 시험지 열기</a>{assessment.status === "published" && <button className="outline-button" disabled={busy} onClick={() => changeStatus("closed")}>평가 마감</button>}</div></>}</div></section>
+    <section className="detail-distribution response-card">{assessment.status === "published" && origin && (!distribution || distribution.status === "open") && <QRCodeSVG value={joinUrl} size={148} level="M" marginSize={2} title="이 평가의 학생 시험지 QR" />}<div><h2>{assessment.status === "draft" ? "검토를 마치고 평가를 공개하세요" : distribution ? `${distribution.grade}학년 ${distribution.className} 학생용 시험지` : "평가 문항이 공개되었습니다"}</h2><p>문항 {assessment.definition.questions.length}개 · {assessment.definition.questions.reduce((n, q) => n + q.points, 0)}점 · 학생용 시험 결과 상/중/하</p>{assessment.status === "draft" ? <><p>공개하면 문항·성취기준·루브릭이 잠깁니다. 공개 후 학급 운영실에서 대상 학급에 배포하세요.</p><button className="primary-button" disabled={busy} onClick={() => changeStatus("published")}>평가 문항 공개</button></> : distribution ? <><p>{distribution.instructions || "학생 안내 문구 없음"} · 대상 {distribution.totalStudents}명</p><label>이 학급의 학생 시험지 링크<input value={joinUrl} readOnly aria-label="학생 시험지 링크" /></label><div className="workspace-controls"><button className="outline-button" onClick={copy}>링크 복사</button><a className="outline-button button-link" href={joinUrl} target="_blank" rel="noreferrer">학생 시험지 열기</a></div></> : <><p>학급 운영실에서 공개된 평가를 선택하면 학급 명렬 전용 QR과 링크가 만들어집니다.</p><div className="workspace-controls"><Link className="primary-button button-link" href="/classes">학급을 선택해 배포</Link><button className="outline-button" disabled={busy} onClick={() => changeStatus("closed")}>평가 문항 마감</button></div></>}</div></section>
     <details className="response-card"><summary>문항·성취기준·루브릭 확인</summary>{assessment.definition.questions.map((q, i) => <article className="definition-question" key={q.id}><strong>{i + 1}. {q.prompt}</strong><p>{q.standardCode} · {q.criterion} · {q.points}점</p></article>)}{assessment.definition.rubric.map(r => <article className="definition-question" key={r.rubricCriterionId ?? `${r.standardCode ?? "all"}-${r.name}`}><strong>{r.standardCode ? `${r.standardCode} · ` : ""}{r.name}</strong><p>상: {r.high}</p><p>중: {r.middle}</p><p>하: {r.low}</p></article>)}<p>교사 설정 기준: 상 {assessment.definition.grading.upperThreshold}% 이상 · 중 {assessment.definition.grading.middleThreshold}% 이상 · 그 외 하. 이는 학생용 시험 결과이며 교육과정 성장 수준을 자동 확정하지 않습니다.</p></details>
-    <section className="assessment-section"><div className="assessment-list-heading"><div><p className="kicker">실제 제출된 답안</p><h2>학생별 결과 · {submissions.length}명</h2></div><div className="workspace-controls"><button className="outline-button" disabled={busy} onClick={refresh}>새로고침</button><button className="outline-button" disabled={!submissions.length} onClick={exportCsv}>결과 CSV</button></div></div>{!submissions.length && <div className="empty-workspace"><h3>아직 제출된 답안이 없습니다.</h3><p>학생의 최종 제출이 서버에 저장되면 여기에 표시됩니다.</p></div>}<div className="submission-grid">{submissions.map(s => <button className={`submission-card ${s.id === selected ? "selected" : ""}`} key={s.id} onClick={() => setSelected(s.id)}><strong>{s.studentLabel}</strong><small>{new Date(s.submittedAt!).toLocaleString("ko-KR")}</small><span>{s.review ? `${reviewState[s.review.state]} · ${s.review.total}점 · ${s.review.level}` : "교사 검토 대기"}</span></button>)}</div></section>
+    <section className="assessment-section"><div className="assessment-list-heading"><div><p className="kicker">{distribution ? `${distribution.grade}학년 ${distribution.className} · 실제 제출 답안` : "실제 제출된 답안"}</p><h2>학생별 결과 · {submissions.length}명</h2></div><div className="workspace-controls"><button className="outline-button" disabled={busy} onClick={refresh}>새로고침</button><button className="outline-button" disabled={!submissions.length} onClick={exportCsv}>결과 CSV</button></div></div>{!submissions.length && <div className="empty-workspace"><h3>아직 제출된 답안이 없습니다.</h3><p>학생의 최종 제출이 서버에 저장되면 여기에 표시됩니다.</p></div>}<div className="submission-grid">{submissions.map(s => <button className={`submission-card ${s.id === selected ? "selected" : ""}`} key={s.id} onClick={() => setSelected(s.id)}><strong>{s.studentLabel}</strong><small>{new Date(s.submittedAt!).toLocaleString("ko-KR")}</small><span>{s.review ? `${reviewState[s.review.state]} · ${s.review.total}점 · ${s.review.level}` : "교사 검토 대기"}</span></button>)}</div></section>
     {active && <ReviewEditor key={active.id} assessment={assessment} submission={active} onSaved={review => setSubmissions(current => current.map(s => s.id === active.id ? { ...s, review } : s))} />}
   </div>;
 }

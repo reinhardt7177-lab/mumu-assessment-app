@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { CurriculumTermRecord } from "../../db/growth-repository";
+import type { ClassroomRecord } from "../../db/classroom-repository";
 import { requestJson } from "../../lib/client-api";
 
 const subjects = ["국어", "사회", "수학", "과학", "도덕", "영어"] as const;
 
-export default function CurriculumWorkspace({ initialTerms, defaultSchoolYear }: { initialTerms: CurriculumTermRecord[]; defaultSchoolYear: number }) {
+export default function CurriculumWorkspace({ initialTerms, classes, defaultSchoolYear }: { initialTerms: CurriculumTermRecord[]; classes: ClassroomRecord[]; defaultSchoolYear: number }) {
   const [terms, setTerms] = useState(initialTerms);
   const [creating, setCreating] = useState(false);
   const totalEvidence = terms.reduce((sum, term) => sum + term.evidenceCount, 0);
@@ -27,7 +28,7 @@ export default function CurriculumWorkspace({ initialTerms, defaultSchoolYear }:
     </section>
 
     <section className="assessment-section curriculum-term-section">
-      <div className="assessment-list-heading"><div><p className="kicker">MY CURRICULUM</p><h2>학기 교육과정</h2></div><Link className="outline-button button-link" href="/">평가 문항·QR 관리</Link></div>
+      <div className="assessment-list-heading"><div><p className="kicker">MY CURRICULUM</p><h2>학기 교육과정</h2></div><Link className="outline-button button-link" href="/assessments">평가 문항 관리</Link></div>
       {terms.length === 0 ? <div className="empty-workspace"><h2>첫 학기 교육과정을 만들어 볼까요?</h2><p>학년·학기·학급·교과를 정하면 단원과 성취기준, 학생 성장 기록을 한곳에 모을 수 있습니다.</p><button type="button" className="primary-button" onClick={() => setCreating(true)}>학기 교육과정 만들기</button></div> : null}
       <div className="curriculum-term-grid">
         {terms.map(term => <Link className="curriculum-term-card" href={`/curriculum/${term.id}`} key={term.id}>
@@ -39,16 +40,18 @@ export default function CurriculumWorkspace({ initialTerms, defaultSchoolYear }:
       </div>
     </section>
 
-    {creating ? <TermCreator defaultSchoolYear={defaultSchoolYear} onClose={() => setCreating(false)} onCreated={term => { setTerms(current => [term, ...current]); setCreating(false); }} /> : null}
+    {creating ? <TermCreator classes={classes} defaultSchoolYear={defaultSchoolYear} onClose={() => setCreating(false)} onCreated={term => { setTerms(current => [term, ...current]); setCreating(false); }} /> : null}
   </div>;
 }
 
-function TermCreator({ defaultSchoolYear, onClose, onCreated }: { defaultSchoolYear: number; onClose: () => void; onCreated: (term: CurriculumTermRecord) => void }) {
+function TermCreator({ classes, defaultSchoolYear, onClose, onCreated }: { classes: ClassroomRecord[]; defaultSchoolYear: number; onClose: () => void; onCreated: (term: CurriculumTermRecord) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [schoolYear, setSchoolYear] = useState(defaultSchoolYear);
+  const initialClass = classes[0];
+  const [classId, setClassId] = useState(initialClass?.id ?? "");
+  const [schoolYear, setSchoolYear] = useState(initialClass?.schoolYear ?? defaultSchoolYear);
   const [semester, setSemester] = useState<1 | 2>(1);
-  const [grade, setGrade] = useState(6);
-  const [className, setClassName] = useState("1반");
+  const [grade, setGrade] = useState(initialClass?.grade ?? 6);
+  const [className, setClassName] = useState(initialClass?.name ?? "1반");
   const [subject, setSubject] = useState<(typeof subjects)[number]>("사회");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -58,12 +61,17 @@ function TermCreator({ defaultSchoolYear, onClose, onCreated }: { defaultSchoolY
     setGrade(nextGrade);
     if (nextGrade < 3 && subject !== "국어" && subject !== "수학") setSubject("국어");
   };
+  const chooseClass = (nextId: string) => {
+    setClassId(nextId);
+    const next = classes.find(item => item.id === nextId);
+    if (next) { setSchoolYear(next.schoolYear); changeGrade(next.grade); setClassName(next.name); }
+  };
   const save = async () => {
     setBusy(true); setError("");
     try {
       const data = await requestJson<{ term: CurriculumTermRecord }>("/api/teacher/curriculum/terms", {
         method: "POST",
-        body: JSON.stringify({ schoolYear, semester, grade, className, subject }),
+        body: JSON.stringify({ classId: classId || null, schoolYear, semester, grade, className, subject }),
       });
       onCreated(data.term);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "학기 교육과정을 저장하지 못했습니다."); }
@@ -73,13 +81,13 @@ function TermCreator({ defaultSchoolYear, onClose, onCreated }: { defaultSchoolY
     <div className="modal-heading"><div><p className="kicker">교육과정 성장 평가 시작</p><h2 id="term-creator-title">학기 교육과정 만들기</h2></div><button type="button" aria-label="닫기" disabled={busy} onClick={onClose}>×</button></div>
     <div className="wizard-body"><p className="wizard-guide">이 정보가 단원·평가·수행 증거·학기말 판단의 가장 위 구조가 됩니다.</p>
       <div className="field-row curriculum-term-fields">
-        <label>학년도<input type="number" min={2022} max={2100} value={schoolYear} onChange={event => setSchoolYear(Number(event.target.value))} /></label>
+        {classes.length ? <label>등록 학급<select value={classId} onChange={event => chooseClass(event.target.value)}>{classes.map(item => <option value={item.id} key={item.id}>{item.schoolYear} · {item.grade}학년 {item.name}</option>)}</select></label> : <label>학년도<input type="number" min={2022} max={2100} value={schoolYear} onChange={event => setSchoolYear(Number(event.target.value))} /></label>}
         <label>학기<select value={semester} onChange={event => setSemester(Number(event.target.value) as 1 | 2)}><option value={1}>1학기</option><option value={2}>2학기</option></select></label>
-        <label>학년<select value={grade} onChange={event => changeGrade(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6].map(value => <option value={value} key={value}>{value}학년</option>)}</select></label>
-        <label>학급<input value={className} maxLength={50} onChange={event => setClassName(event.target.value)} /></label>
+        <label>학년<select disabled={classes.length > 0} value={grade} onChange={event => changeGrade(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6].map(value => <option value={value} key={value}>{value}학년</option>)}</select></label>
+        <label>학급<input disabled={classes.length > 0} value={className} maxLength={50} onChange={event => setClassName(event.target.value)} /></label>
         <label>교과<select value={subject} onChange={event => setSubject(event.target.value as (typeof subjects)[number])}>{availableSubjects.map(value => <option key={value}>{value}</option>)}</select></label>
       </div>
-      <div className="lock-note">학생 정보는 학기별 번호·별칭으로 등록합니다. 실제 운영 전 학교의 개인정보 처리 기준을 확인하세요.</div>
+      <div className="lock-note">{classes.length ? "선택한 학급의 활성 학생 명렬이 이 교육과정에 자동 연결됩니다." : "먼저 학급을 등록하면 학생 명렬을 교육과정에 자동 연결할 수 있습니다."} 실제 운영 전 학교의 개인정보 처리 기준을 확인하세요.</div>
       {error ? <p className="ai-generation-error" role="alert">{error}</p> : null}
     </div>
     <div className="modal-actions"><button type="button" className="outline-button" disabled={busy} onClick={onClose}>취소</button><button type="button" className="primary-button" disabled={busy || !className.trim()} onClick={() => void save()}>{busy ? "저장 중…" : "서버에 학기 저장"}</button></div>
