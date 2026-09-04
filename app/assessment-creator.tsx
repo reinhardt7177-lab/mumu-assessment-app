@@ -2,11 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import AchievementStandardPicker, { type AchievementStandard } from "./achievement-standard-picker";
-import type { AssessmentDefinition, AssessmentQuestion, AssessmentRecord } from "../lib/assessment-domain";
+import type { AssessmentDefinition, AssessmentMethod, AssessmentQuestion, AssessmentRecord } from "../lib/assessment-domain";
 import { requestJson } from "../lib/client-api";
 
 const steps = ["기본 정보", "성취기준", "평가 문항", "응답 방법", "루브릭", "저장·배포"];
 const subjects = Array.from({ length: 6 }, (_, i) => i + 1).flatMap(grade => (grade < 3 ? ["국어", "수학"] : ["국어", "사회", "수학", "과학", "도덕", "영어"]).map(subject => `${grade}학년 ${subject}`));
+const responseMethods: Array<{ id: AssessmentMethod; title: string; description: string }> = [
+  { id: "text", title: "온라인 답안", description: "화면에서 직접 작성·제출" },
+  { id: "photo", title: "종이 시험지·OCR", description: "손글씨 사진을 글자로 변환" },
+  { id: "speech", title: "오럴 테스트", description: "녹음 후 전사 내용 확인" },
+  { id: "chat", title: "평가 챗봇", description: "대화·시간·도움 수준 분석" },
+  { id: "screen", title: "화면 녹화", description: "디지털 수행 과정 30초 수합" },
+];
 const initialRubric: AssessmentDefinition["rubric"] = ["개념 이해", "근거 제시", "논리적 설명"].map(name => ({ name, high: "핵심 내용을 정확하고 구체적으로 설명한다.", middle: "핵심 내용을 설명하나 일부 보완이 필요하다.", low: "핵심 내용을 설명하는 데 안내와 도움이 필요하다." }));
 const historyDateFormat = new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" });
 export type CurriculumAssessmentContext = {
@@ -37,6 +44,7 @@ export default function AssessmentCreator({ onClose, onCreated, curriculumContex
   const [standards, setStandards] = useState<AchievementStandard[]>(curriculumContext?.standards ?? []);
   const [questions, setQuestions] = useState<AssessmentQuestion[]>([]);
   const [rubric, setRubric] = useState<AssessmentDefinition["rubric"]>(curriculumContext?.rubric ?? initialRubric);
+  const [methods, setMethods] = useState<AssessmentMethod[]>(["text"]);
   const [grading, setGrading] = useState({ upperThreshold: 80, middleThreshold: 50 });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -89,7 +97,7 @@ export default function AssessmentCreator({ onClose, onCreated, curriculumContex
   const save = async () => {
     setBusy(true); setError("");
     try {
-      const definition: AssessmentDefinition = { title, subject, learningGoal: goal, type, standardCodes: standards.map(s => s.code), questions, methods: ["text"], rubric, grading };
+      const definition: AssessmentDefinition = { title, subject, learningGoal: goal, type, standardCodes: standards.map(s => s.code), questions, methods, rubric, grading };
       const payload = curriculumContext ? { definition, curriculumLink: { unitId: curriculumContext.unitId, eventType: type === "독립 수행평가" ? "initial" : "formative", context: `${goal}\n\n학생 수행 과제: ${title}`, occurredAt: new Date().toISOString() } } : definition;
       const data = await requestJson<{ assessment: AssessmentRecord }>("/api/teacher/assessments", { method: "POST", body: JSON.stringify(payload) });
       onCreated(data.assessment);
@@ -121,7 +129,7 @@ export default function AssessmentCreator({ onClose, onCreated, curriculumContex
       <div className="question-list">{questions.map((q, index) => <article className="question-editor" key={q.id}><div className="question-editor-head"><strong>문항 {index + 1}</strong><button onClick={() => setQuestions(current => current.filter(item => item.id !== q.id))}>삭제</button></div><label>문항 내용<textarea value={q.prompt} maxLength={2000} onChange={e => updateQuestion(q.id, { prompt: e.target.value })} /></label><div className="question-meta"><label>성취기준<select value={q.standardCode} onChange={e => changeQuestionStandard(q.id, e.target.value)}>{standards.map(s => <option key={s.code}>{s.code}</option>)}</select></label><label>평가 기준<select value={q.criterion} onChange={e => changeQuestionCriterion(q.id, q.standardCode, e.target.value)}>{rubricFor(q.standardCode).map(r => <option key={r.rubricCriterionId ?? `${r.standardCode ?? "all"}-${r.name}`}>{r.name}</option>)}</select></label><label>배점<input type="number" min={1} max={100} value={q.points} onChange={e => updateQuestion(q.id, { points: Number(e.target.value) })} /></label></div></article>)}</div>
       <button className="add-question-button" disabled={questions.length >= 20 || busy} onClick={addQuestion}>＋ 문항 직접 추가</button>
     </div>}
-    {step === 3 && <div className="wizard-body"><p className="wizard-guide">실제로 저장까지 연결된 방식만 배포할 수 있습니다.</p><div className="method-grid"><button className="selected" aria-pressed="true"><span>✓</span><strong>글쓰기</strong><small>문항별 서버 자동 저장·최종 제출</small></button>{["손글씨 사진 · OCR", "말하기 · 녹음", "챗봇 대화"].map(name => <button key={name} disabled><span>＋</span><strong>{name}</strong><small>파일 저장·분석 연결 작업 중</small></button>)}</div><p>학생은 QR·링크로 시험지만 엽니다. 학생용 계정 가입은 요구하지 않습니다.</p></div>}
+    {step === 3 && <div className="wizard-body"><p className="wizard-guide">학생에게 보여 줄 응답 방식을 하나 이상 선택하세요. 선택한 방식만 QR 시험지에 표시됩니다.</p><div className="method-grid">{responseMethods.map(option => { const selected = methods.includes(option.id); return <button type="button" key={option.id} className={selected ? "selected" : ""} aria-pressed={selected} onClick={() => setMethods(current => selected ? current.length === 1 ? current : current.filter(item => item !== option.id) : responseMethods.map(item => item.id).filter(item => [...current, option.id].includes(item)))}><span>{selected ? "✓" : "＋"}</span><strong>{option.title}</strong><small>{option.description}</small></button>; })}</div><p>학생은 QR·링크로 시험지만 엽니다. 사진·음성·화면 녹화는 이름·번호를 제외하고 학교 승인 설정이 켜진 경우에만 저장됩니다.</p></div>}
     {step === 4 && <div className="wizard-body">{curriculumContext ? <><p className="wizard-guide">단원에서 검토 완료·잠금한 준거 루브릭입니다. 이 평가에서는 수정하지 않으며, 학생 결과물에 실제로 나타난 수행을 기준별로 따로 판단합니다.</p><div className="locked-rubric-list">{rubric.map(r => <article key={r.rubricCriterionId ?? `${r.standardCode}-${r.name}`}><header><span>{r.standardCode}</span><strong>{r.name}</strong><em>잠김</em></header><p><b>상</b>{r.high}</p><p><b>중</b>{r.middle}</p><p><b>하</b>{r.low}</p></article>)}</div></> : <><p className="wizard-guide">아래 문구는 편집 가능한 출발점입니다. 실제 문항에서 관찰할 수 있는 수행으로 구체화해 주세요.</p>{rubric.map((r, index) => <article className="question-editor" key={index}><label>평가 기준 이름<input value={r.name} maxLength={80} onChange={e => { const name = e.target.value; setRubric(current => current.map((item, i) => i === index ? { ...item, name } : item)); setQuestions(current => current.map(q => q.criterion === r.name ? { ...q, criterion: name } : q)); }} /></label>{(["high", "middle", "low"] as const).map((level, i) => <label key={level}>{["상", "중", "하"][i]} 수준의 관찰 가능한 수행<textarea value={r[level]} maxLength={500} onChange={e => setRubric(current => current.map((item, j) => j === index ? { ...item, [level]: e.target.value } : item))} /></label>)}</article>)}</>}<h3>학생용 점수 환산 기준</h3><p>학생 시험지에 공개할 보조 결과입니다. 교육과정 성장 수준과 학기말 판단은 이 점수로 자동 확정하지 않습니다.</p><div className="field-row"><label>상: 총점 대비 몇 % 이상<input type="number" min={2} max={100} value={grading.upperThreshold} onChange={e => setGrading({ ...grading, upperThreshold: Number(e.target.value) })} /></label><label>중: 총점 대비 몇 % 이상<input type="number" min={1} max={99} value={grading.middleThreshold} onChange={e => setGrading({ ...grading, middleThreshold: Number(e.target.value) })} /></label></div></div>}
     {step === 5 && <div className="wizard-body"><div className="wizard-guide"><p className="kicker">저장 내용 확인</p><h2>{title}</h2><p>{subject} · {standards.length}개 성취기준 · {questions.length}문항 · {total}점</p></div><p>먼저 서버에 초안으로 저장합니다. 저장이 확인되면 평가 상세 화면에서 공개하고 QR·링크를 배포할 수 있습니다.</p>{curriculumContext ? <div className="curriculum-assessment-link-note"><span>자동 성장 기록</span><strong>{curriculumContext.unitTitle}</strong><small>등록 학생의 최종 제출을 원본 수행 증거로 수합합니다.</small></div> : null}<div className="lock-note">공개 후에는 문항과 루브릭이 잠깁니다. 다른 버전이 필요하면 새 평가로 만들어 주세요.</div></div>}
     <div className="modal-actions"><button className="outline-button" disabled={busy} onClick={() => step === 0 ? onClose() : setStep(step - 1)}>{step === 0 ? "취소" : "이전"}</button><button className="primary-button" disabled={!valid || busy} onClick={() => step === 5 ? void save() : setStep(step + 1)}>{busy ? "처리 중…" : step === 5 ? "서버에 평가 저장" : "다음"}</button></div>

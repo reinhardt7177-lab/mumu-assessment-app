@@ -5,7 +5,7 @@ import type { AssessmentQuestion } from "../lib/assessment-domain";
 import { requestFormData, requestJson } from "../lib/client-api";
 import type { ResponseEvidenceRecord, StudentEvidencePayload } from "../lib/evidence-domain";
 
-type Method = "text" | "photo" | "speech" | "chat";
+type Method = "text" | "photo" | "speech" | "chat" | "screen";
 type Props = {
   code: string;
   question: AssessmentQuestion;
@@ -26,6 +26,7 @@ const labels: Record<Method, { icon: string; title: string; description: string 
   photo: { icon: "▣", title: "손글씨 사진", description: "답안 영역 촬영 후 OCR 확인" },
   speech: { icon: "●", title: "말로 답하기", description: "녹음 후 전사 내용 확인" },
   chat: { icon: "⌁", title: "대화로 답하기", description: "질문을 받으며 생각 설명하기" },
+  screen: { icon: "▱", title: "화면 녹화", description: "디지털 수행 과정을 영상으로 남기기" },
 };
 
 function latestForQuestion(evidence: ResponseEvidenceRecord[], questionId: string, modality: Exclude<Method, "text">) {
@@ -56,22 +57,25 @@ export default function StudentEvidenceResponse(props: Props) {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recordStartedAt = useRef(0);
+  const screenStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach(track => track.stop());
+    if (screenStopTimerRef.current) clearTimeout(screenStopTimerRef.current);
     if (recordedUrl) URL.revokeObjectURL(recordedUrl);
   }, [recordedUrl]);
 
   const photo = latestForQuestion(evidence, question.id, "photo");
   const speech = latestForQuestion(evidence, question.id, "speech");
   const chat = latestForQuestion(evidence, question.id, "chat");
-  const selectedResponse = method === "photo" ? photo : method === "speech" ? speech : method === "chat" ? chat : null;
+  const screen = latestForQuestion(evidence, question.id, "screen");
+  const selectedResponse = method === "photo" ? photo : method === "speech" ? speech : method === "chat" ? chat : method === "screen" ? screen : null;
   const latestDerivation = selectedResponse?.derivations.find(item => item.status === "complete") ?? selectedResponse?.derivations[0];
   const aiReady = policy.enabled && policy.aiConfigured;
   const mediaReady = aiReady && policy.storageConfigured;
   const tabs = useMemo(() => methods.filter(item => labels[item]), [methods]);
 
-  const uploadAndProcess = async (modality: "photo" | "speech") => {
+  const uploadAndProcess = async (modality: "photo" | "speech" | "screen") => {
     if (!selectedFile || !identifiersRemoved) return;
     setBusy(true); props.onError("");
     try {
@@ -80,11 +84,16 @@ export default function StudentEvidenceResponse(props: Props) {
       form.set("modality", modality);
       form.set("file", selectedFile);
       form.set("identifiersRemoved", "true");
-      if (modality === "speech" && recordedSeconds > 0) form.set("durationSeconds", String(recordedSeconds));
+      if ((modality === "speech" || modality === "screen") && recordedSeconds > 0) form.set("durationSeconds", String(recordedSeconds));
       const uploaded = await requestFormData<{ responses: ResponseEvidenceRecord[] }>(`/api/student/${code}/evidence`, form);
       props.onEvidenceChange(uploaded.responses);
       const response = latestForQuestion(uploaded.responses, question.id, modality);
       if (!response) throw new Error("업로드한 답안을 찾을 수 없습니다.");
+      if (modality === "screen") {
+        props.onNotice("화면 녹화를 비공개로 저장했어요. 선생님이 수행 과정을 직접 확인합니다.");
+        setSelectedFile(null); setIdentifiersRemoved(false); setRecordedUrl(""); setRecordedSeconds(0);
+        return;
+      }
       props.onNotice(modality === "photo" ? "사진을 안전하게 저장했어요. 글자를 읽는 중…" : "녹음을 안전하게 저장했어요. 말한 내용을 옮기는 중…");
       const processed = await requestJson<{ responses: ResponseEvidenceRecord[] }>(`/api/student/${code}/evidence/${response.id}/process`, {
         method: "POST", body: "{}", signal: AbortSignal.timeout(60_000),
@@ -126,9 +135,43 @@ export default function StudentEvidenceResponse(props: Props) {
   };
 
   const stopRecording = () => {
-    recorderRef.current?.stop();
+    if (screenStopTimerRef.current) clearTimeout(screenStopTimerRef.current);
+    screenStopTimerRef.current = null;
+    if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop();
     recorderRef.current = null;
     setRecording(false);
+  };
+
+  const startScreenRecording = async () => {
+    props.onError("");
+    try {
+      if (!navigator.mediaDevices?.getDisplayMedia || typeof MediaRecorder === "undefined") throw new Error("이 기기에서는 화면 녹화를 지원하지 않아요. 녹화 파일을 선택해 주세요.");
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 10 }, audio: false });
+      streamRef.current = stream;
+      const preferred = MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : MediaRecorder.isTypeSupported("video/webm") ? "video/webm" : "";
+      const recorder = new MediaRecorder(stream, preferred ? { mimeType: preferred, videoBitsPerSecond: 350_000 } : { videoBitsPerSecond: 350_000 });
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+      recorder.onstop = () => {
+        if (screenStopTimerRef.current) clearTimeout(screenStopTimerRef.current);
+        screenStopTimerRef.current = null;
+        const mimeType = (recorder.mimeType || "video/webm").split(";", 1)[0];
+        const blob = new Blob(chunks, { type: mimeType });
+        if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+        setRecordedUrl(URL.createObjectURL(blob));
+        setRecordedSeconds(Math.max(1, Math.min(30, Math.round((Date.now() - recordStartedAt.current) / 1000))));
+        setSelectedFile(new File([blob], `screen-answer.${mimeType === "video/mp4" ? "mp4" : "webm"}`, { type: mimeType }));
+        stream.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+        setRecording(false);
+      };
+      stream.getVideoTracks()[0].onended = () => { if (recorder.state !== "inactive") recorder.stop(); };
+      recorderRef.current = recorder;
+      recordStartedAt.current = Date.now();
+      recorder.start(500);
+      setRecording(true);
+      screenStopTimerRef.current = setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, 30_000);
+    } catch (reason) { props.onError(reason instanceof Error ? reason.message : "화면 녹화를 시작하지 못했어요."); }
   };
 
   const sendChat = async () => {
@@ -160,7 +203,7 @@ export default function StudentEvidenceResponse(props: Props) {
       <small>{textValue.length} / 10,000자</small>
     </div>}
 
-    {(method === "photo" || method === "speech") && <div className="student-method-panel media-answer-panel" role="tabpanel">
+    {(method === "photo" || method === "speech" || method === "screen") && <div className="student-method-panel media-answer-panel" role="tabpanel">
       {!mediaReady && <p className="evidence-readiness-warning">선생님이 학교 승인 설정과 비공개 저장소를 준비하면 사용할 수 있어요. 지금은 글 답안을 이용해 주세요.</p>}
       {method === "photo" ? <>
         <label className="evidence-file-picker">답안 영역 사진 선택<input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={disabled || busy || !mediaReady} onChange={event => setSelectedFile(event.target.files?.[0] ?? null)} /></label>
@@ -169,20 +212,28 @@ export default function StudentEvidenceResponse(props: Props) {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img className="student-evidence-preview" src={`/api/student/${code}/evidence/assets/${photo.assets[0].id}`} alt="내가 올린 손글씨 답안" />
         </>}
-      </> : <>
+      </> : method === "speech" ? <>
         <div className="recording-controls">
           {!recording ? <button type="button" className="outline-button" disabled={disabled || busy || !mediaReady} onClick={startRecording}>● 녹음 시작</button> : <button type="button" className="primary-button recording" onClick={stopRecording}>■ 녹음 끝내기</button>}
           <label className="evidence-file-picker compact">또는 녹음 파일 선택<input type="file" accept="audio/webm,audio/mp4,audio/mpeg,audio/wav" disabled={disabled || busy || !mediaReady} onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setRecordedSeconds(0); }} /></label>
         </div>
         {recordedUrl && <audio className="student-audio-preview" controls src={recordedUrl}><track kind="captions" src={captionTrack()} srcLang="ko" label="한국어 전사" default />녹음을 재생할 수 없습니다.</audio>}
         {speech?.assets[0] && !recordedUrl && <audio className="student-audio-preview" controls src={`/api/student/${code}/evidence/assets/${speech.assets[0].id}`}><track kind="captions" src={captionTrack(latestDerivation?.extractedText)} srcLang="ko" label="한국어 전사" default />녹음을 재생할 수 없습니다.</audio>}
+      </> : <>
+        <p className="screen-recording-guide">디지털 작품을 만드는 과정을 최대 30초 동안 녹화합니다. 화면 공유 창에서 평가에 필요한 창만 선택하세요.</p>
+        <div className="recording-controls">
+          {!recording ? <button type="button" className="outline-button" disabled={disabled || busy || !mediaReady} onClick={startScreenRecording}>▱ 화면 녹화 시작</button> : <button type="button" className="primary-button recording" onClick={stopRecording}>■ 녹화 끝내기</button>}
+          <label className="evidence-file-picker compact">또는 녹화 파일 선택<input type="file" accept="video/webm,video/mp4" disabled={disabled || busy || !mediaReady} onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setRecordedSeconds(0); }} /></label>
+        </div>
+        {recordedUrl && <video className="student-screen-preview" controls src={recordedUrl}>화면 녹화를 재생할 수 없습니다.</video>}
+        {screen?.assets[0] && !recordedUrl && <video className="student-screen-preview" controls src={`/api/student/${code}/evidence/assets/${screen.assets[0].id}`}>화면 녹화를 재생할 수 없습니다.</video>}
       </>}
       <label className="identifier-confirmation"><input type="checkbox" checked={identifiersRemoved} disabled={disabled || busy || !selectedFile} onChange={event => setIdentifiersRemoved(event.target.checked)} />
-        <span>{method === "photo" ? "사진에 이름·번호가 보이지 않고 답안 영역만 담겼어요." : "녹음에서 이름·번호를 말하지 않았어요."}</span>
+        <span>{method === "photo" ? "사진에 이름·번호가 보이지 않고 답안 영역만 담겼어요." : method === "speech" ? "녹음에서 이름·번호를 말하지 않았어요." : "화면에 이름·번호·알림 등 개인정보가 보이지 않아요."}</span>
       </label>
       {selectedFile && <p className="selected-evidence-file">선택됨 · {selectedFile.name} · {(selectedFile.size / 1024 / 1024).toFixed(1)}MB</p>}
-      <button type="button" className="primary-button" disabled={disabled || busy || !mediaReady || !selectedFile || !identifiersRemoved} onClick={() => void uploadAndProcess(method)}>{busy ? "안전하게 처리하는 중…" : method === "photo" ? "사진 저장하고 글자 읽기" : "녹음 저장하고 전사하기"}</button>
-      {latestDerivation && <div className={`evidence-derivation ${latestDerivation.status}`}>
+      <button type="button" className="primary-button" disabled={disabled || busy || !mediaReady || !selectedFile || !identifiersRemoved} onClick={() => void uploadAndProcess(method)}>{busy ? "안전하게 처리하는 중…" : method === "photo" ? "사진 저장하고 글자 읽기" : method === "speech" ? "녹음 저장하고 전사하기" : "화면 녹화 저장하기"}</button>
+      {method !== "screen" && latestDerivation && <div className={`evidence-derivation ${latestDerivation.status}`}>
         <strong>{latestDerivation.status === "complete" ? "변환된 답안" : latestDerivation.status === "pending" ? "변환 중" : "변환 실패"}</strong>
         {latestDerivation.extractedText && <p>{latestDerivation.extractedText}</p>}
         {latestDerivation.confidence != null && <small>변환 신뢰도 참고값 {Math.round(latestDerivation.confidence * 100)}% · 성취 수준에는 직접 반영하지 않아요.</small>}

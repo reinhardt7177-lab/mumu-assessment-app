@@ -16,7 +16,7 @@ import {
   type RubricDraftItem,
   type ValidityAudit,
 } from "../lib/design-studio-domain";
-import type { AssessmentDefinition } from "../lib/assessment-domain";
+import { assessmentMethodSchema, type AssessmentDefinition } from "../lib/assessment-domain";
 import type { Query } from "./repository";
 
 const sessionColumns = `s.id, s.owner_id AS "ownerId", s.title, s.grade, s.subject,
@@ -30,10 +30,11 @@ function mapSession(row: Record<string, unknown>): DesignSessionRecord {
   const standards = Array.isArray(row.standards) ? alignmentCandidateSchema.array().parse(row.standards.map(item => ({ ...(item as object), confidence: number((item as { confidence?: unknown }).confidence) }))) : [];
   const competency = row.competency ? competencyUnpackSchema.parse(row.competency) : null;
   const rawBlueprint = row.blueprint && typeof row.blueprint === "object" ? row.blueprint as Record<string, unknown> : null;
+  const parsedMethods = assessmentMethodSchema.array().min(1).max(5).safeParse(rawBlueprint?.methods ?? ["text"]);
   const blueprint = rawBlueprint ? {
     rubric: rubricDraftItemSchema.array().parse(rawBlueprint.rubric ?? []),
     questions: questionDraftSchema.array().parse(rawBlueprint.questions ?? []),
-    methods: ["text"] as AssessmentDefinition["methods"],
+    methods: parsedMethods.success ? parsedMethods.data : ["text"] as AssessmentDefinition["methods"],
     grading: { upperThreshold: number((rawBlueprint.grading as { upperThreshold?: unknown } | undefined)?.upperThreshold || 80), middleThreshold: number((rawBlueprint.grading as { middleThreshold?: unknown } | undefined)?.middleThreshold || 50) },
   } : null;
   return {
@@ -150,16 +151,21 @@ export function createDesignStudioRepository(query: Query) {
       await query("UPDATE design_sessions SET current_step = greatest(current_step, 3), status = 'draft', validity_checked_at = NULL, updated_at = now() WHERE id = $1 AND owner_id = $2", [id, ownerId]);
       return get(id, ownerId);
     },
-    async saveBlueprint(id: string, ownerId: string, input: { rubric: RubricDraftItem[]; questions: QuestionDraft[]; source: DraftSource }) {
+    async saveBlueprint(id: string, ownerId: string, input: { rubric: RubricDraftItem[]; questions: QuestionDraft[]; methods?: AssessmentDefinition["methods"]; grading?: AssessmentDefinition["grading"]; source: DraftSource }) {
       const rubric = rubricDraftItemSchema.array().min(1).max(10).parse(input.rubric);
       const questions = questionDraftSchema.array().max(20).parse(input.questions);
+      const methods = assessmentMethodSchema.array().min(1).max(5).parse(input.methods ?? ["text"]);
+      const grading = input.grading ?? { upperThreshold: 80, middleThreshold: 50 };
+      if (!Number.isInteger(grading.upperThreshold) || !Number.isInteger(grading.middleThreshold) || grading.upperThreshold <= grading.middleThreshold) {
+        throw new AppError(400, "상·중·하 판단 기준값을 확인해 주세요.");
+      }
       const rows = await query(`WITH authorized AS (
         SELECT id FROM design_sessions WHERE id = $1 AND owner_id = $2 AND status <> 'approved'
       ), inserted AS (
-        INSERT INTO assessment_blueprints (id, session_id, version, source, rubric, questions)
-        SELECT $3, a.id, coalesce((SELECT max(b.version) + 1 FROM assessment_blueprints b WHERE b.session_id = a.id), 1), $4, $5::jsonb, $6::jsonb
+        INSERT INTO assessment_blueprints (id, session_id, version, source, rubric, questions, methods, grading)
+        SELECT $3, a.id, coalesce((SELECT max(b.version) + 1 FROM assessment_blueprints b WHERE b.session_id = a.id), 1), $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb
         FROM authorized a RETURNING id
-      ) SELECT id FROM inserted`, [id, ownerId, randomUUID(), input.source, JSON.stringify(rubric), JSON.stringify(questions)]);
+      ) SELECT id FROM inserted`, [id, ownerId, randomUUID(), input.source, JSON.stringify(rubric), JSON.stringify(questions), JSON.stringify(methods), JSON.stringify(grading)]);
       if (!rows[0]) throw new AppError(409, "루브릭과 문항 초안을 저장할 수 없는 설계입니다.");
       await query("UPDATE design_sessions SET current_step = greatest(current_step, $3), status = 'draft', validity_checked_at = NULL, updated_at = now() WHERE id = $1 AND owner_id = $2", [id, ownerId, questions.length ? 5 : 4]);
       return get(id, ownerId);

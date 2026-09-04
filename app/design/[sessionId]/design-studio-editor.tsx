@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import type { AssessmentMethod } from "../../../lib/assessment-domain";
 import type { AlignmentCandidate, CompetencyUnpack, DesignSessionRecord, QuestionDraft, RubricDraftItem } from "../../../lib/design-studio-domain";
 import { requestFormData } from "../../../lib/client-api";
 
 const steps = [
   ["자료 입력", "수업 맥락"], ["성취기준", "공식 기준 정렬"], ["성공 기준", "관찰할 수행"],
-  ["루브릭", "상·중·하 기준"], ["평가 문항", "증거 수합"], ["타당도", "품질 점검"], ["교사 승인", "평가 초안 생성"],
+  ["루브릭", "상·중·하 기준"], ["문항·응답 방식", "증거 수합 설계"], ["타당도", "품질 점검"], ["교사 승인", "평가 초안 생성"],
 ] as const;
 
 async function callApi<T>(url: string, init: RequestInit = {}) {
@@ -32,7 +33,7 @@ export default function DesignStudioEditor({ initialSession }: { initialSession:
   const readiness = {
     source: Boolean(session.source?.text.trim()), standards: selectedStandards.length > 0,
     competency: Boolean(session.competency?.successCriteria.length), rubric: Boolean(session.blueprint?.rubric.length),
-    questions: Boolean(session.blueprint?.questions.length), validity: Boolean(session.validity),
+    questions: Boolean(session.blueprint?.questions.length), methods: Boolean(session.blueprint?.methods.length), validity: Boolean(session.validity),
   };
 
   const run = async (label: string, work: () => Promise<void>) => {
@@ -57,8 +58,9 @@ export default function DesignStudioEditor({ initialSession }: { initialSession:
 
   const setStandards = (standards: AlignmentCandidate[]) => update({ standards });
   const setCompetency = (competency: CompetencyUnpack) => update({ competency });
-  const setRubric = (rubric: RubricDraftItem[]) => update({ blueprint: { rubric, questions: session.blueprint?.questions ?? [], methods: ["text"], grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
-  const setQuestions = (questions: QuestionDraft[]) => update({ blueprint: { rubric: session.blueprint?.rubric ?? [], questions, methods: ["text"], grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
+  const setRubric = (rubric: RubricDraftItem[]) => update({ blueprint: { rubric, questions: session.blueprint?.questions ?? [], methods: session.blueprint?.methods ?? ["text"], grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
+  const setQuestions = (questions: QuestionDraft[]) => update({ blueprint: { rubric: session.blueprint?.rubric ?? [], questions, methods: session.blueprint?.methods ?? ["text"], grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
+  const setMethods = (methods: AssessmentMethod[]) => update({ blueprint: { rubric: session.blueprint?.rubric ?? [], questions: session.blueprint?.questions ?? [], methods, grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
 
   return <div className="design-editor-shell">
     <aside className="design-editor-rail">
@@ -88,7 +90,10 @@ export default function DesignStudioEditor({ initialSession }: { initialSession:
         {activeStep === 2 && <StandardsStep standards={session.standards} locked={locked} onChange={setStandards} />}
         {activeStep === 3 && <CompetencyStep competency={session.competency} locked={locked} onChange={setCompetency} standards={selectedStandards} />}
         {activeStep === 4 && <RubricStep rubric={session.blueprint?.rubric ?? []} locked={locked} onChange={setRubric} />}
-        {activeStep === 5 && <QuestionsStep questions={session.blueprint?.questions ?? []} rubric={session.blueprint?.rubric ?? []} standards={selectedStandards} locked={locked} onChange={setQuestions} />}
+        {activeStep === 5 && <div className="design-question-stage">
+          <ResponseMethodsStep methods={session.blueprint?.methods ?? ["text"]} locked={locked} onChange={setMethods} />
+          <QuestionsStep questions={session.blueprint?.questions ?? []} rubric={session.blueprint?.rubric ?? []} standards={selectedStandards} locked={locked} onChange={setQuestions} />
+        </div>}
         {activeStep === 6 && <ValidityStep validity={session.validity} />}
         {activeStep === 7 && <ApprovalStep session={session} readiness={readiness} />}
       </div>
@@ -102,7 +107,7 @@ export default function DesignStudioEditor({ initialSession }: { initialSession:
 }
 
 function stepDescription(step: number) {
-  return ["수업안·교육과정·차시 맥락을 평가 설계의 근거로 저장합니다.", "공식 2022 개정 초등 교육과정에서 실제로 평가할 기준을 고릅니다.", "성취기준을 학생 답안에서 관찰할 수 있는 작은 성공 기준으로 풉니다.", "점수표가 아니라 수행의 질적 차이가 드러나는 상·중·하 기준을 만듭니다.", "각 문항이 어떤 성취기준과 루브릭 증거를 수합하는지 연결합니다.", "구인 타당도·채점 신뢰도·공정성 위협을 배포 전에 점검합니다.", "전체 연결을 확인하고 기존 평가 보관함에 승인된 초안을 만듭니다."][step - 1];
+  return ["수업안·교육과정·차시 맥락을 평가 설계의 근거로 저장합니다.", "공식 2022 개정 초등 교육과정에서 실제로 평가할 기준을 고릅니다.", "성취기준을 학생 답안에서 관찰할 수 있는 작은 성공 기준으로 풉니다.", "점수표가 아니라 수행의 질적 차이가 드러나는 상·중·하 기준을 만듭니다.", "문항을 만든 뒤 학생이 글·시험지 사진·말하기·챗봇·화면 녹화 중 어떤 방식으로 답할지 선택합니다.", "구인 타당도·채점 신뢰도·공정성 위협을 배포 전에 점검합니다.", "전체 연결을 확인하고 기존 평가 보관함에 승인된 초안을 만듭니다."][step - 1];
 }
 
 type ActionContext = {
@@ -122,7 +127,7 @@ function stepAction(step: number, context: ActionContext) {
   if (step === 2) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy)} onClick={() => run("suggest", () => generate("standards/suggest"))}>성취기준 추천</button><button className="primary-button" disabled={Boolean(busy) || !readiness.standards} onClick={() => run("save-standards", () => save({ standards: session.standards, currentStep: 3 }, 3))}>선택 저장하고 다음 →</button></div>;
   if (step === 3) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.standards} onClick={() => run("competency", () => generate("competency/unpack"))}>AI 성공 기준 초안</button><button className="primary-button" disabled={Boolean(busy) || !session.competency} onClick={() => run("save-competency", () => save({ competency: session.competency, currentStep: 4 }, 4))}>수정본 저장하고 다음 →</button></div>;
   if (step === 4) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.competency} onClick={() => run("rubric", () => generate("rubric/generate"))}>AI 루브릭 초안</button><button className="primary-button" disabled={Boolean(busy) || !readiness.rubric} onClick={() => run("save-rubric", () => save({ rubric: session.blueprint?.rubric, currentStep: 5 }, 5))}>루브릭 저장하고 다음 →</button></div>;
-  if (step === 5) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.rubric} onClick={() => run("questions", () => generate("assessment/generate"))}>AI 평가 문항 초안</button><button className="primary-button" disabled={Boolean(busy) || !readiness.questions} onClick={() => run("save-questions", () => save({ questions: session.blueprint?.questions, currentStep: 6 }, 6))}>문항 저장하고 점검 →</button></div>;
+  if (step === 5) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.rubric} onClick={() => run("questions", () => generate("assessment/generate"))}>AI 평가 문항 초안</button><button className="primary-button" disabled={Boolean(busy) || !readiness.questions || !readiness.methods} onClick={() => run("save-questions", () => save({ questions: session.blueprint?.questions, methods: session.blueprint?.methods, currentStep: 6 }, 6))}>문항·응답 방식 저장하고 점검 →</button></div>;
   if (step === 6) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.questions} onClick={() => run("audit", () => generate("validity/audit"))}>타당도 다시 점검</button><button className="primary-button" disabled={Boolean(busy) || !session.validity || session.validity.blocked} onClick={() => context.setActiveStep(7)}>승인 단계로 →</button></div>;
   return <button className="primary-button design-approve-button" disabled={Boolean(busy) || !session.validity || session.validity.blocked} onClick={() => run("approve", async () => {
     const result = await callApi<{ session: DesignSessionRecord }>(`/api/teacher/design-sessions/${session.id}/approve`, { method: "POST", body: "{}" });
@@ -162,6 +167,35 @@ function RubricStep({ rubric, locked, onChange }: { rubric: RubricDraftItem[]; l
   return <div className="design-rubric-stack">{rubric.map((item, index) => <article key={item.id}><header><div><span>기준 {index + 1}</span><input disabled={locked} value={item.name} onChange={event => update(index, { name: event.target.value })} /></div><b>{item.standardCode}</b></header><textarea className="rubric-description" disabled={locked} value={item.description} onChange={event => update(index, { description: event.target.value })} /><div className="design-rubric-levels"><label className="high"><span>상 · 독립적 성취</span><textarea disabled={locked} value={item.high} onChange={event => update(index, { high: event.target.value })} /></label><label className="middle"><span>중 · 부분 성취</span><textarea disabled={locked} value={item.middle} onChange={event => update(index, { middle: event.target.value })} /></label><label className="low"><span>하 · 지원 필요</span><textarea disabled={locked} value={item.low} onChange={event => update(index, { low: event.target.value })} /></label></div></article>)}</div>;
 }
 
+const responseMethodOptions: Array<{ id: AssessmentMethod; icon: string; title: string; description: string; badge: string }> = [
+  { id: "text", icon: "✎", title: "온라인 답안", description: "화면에서 서술형·선택형에 직접 응답", badge: "기본" },
+  { id: "photo", icon: "▣", title: "종이 시험지·OCR", description: "손글씨 답안 사진을 글자로 변환해 확인", badge: "OCR" },
+  { id: "speech", icon: "●", title: "오럴 테스트", description: "학생 음성을 녹음하고 전사해 평가", badge: "전사" },
+  { id: "chat", icon: "⌁", title: "평가 챗봇", description: "대화 기록·학습시간·도움 수준을 함께 분석", badge: "대화" },
+  { id: "screen", icon: "▱", title: "화면 녹화", description: "디지털 수행 과정을 최대 30초 영상으로 수합", badge: "베타" },
+];
+
+function ResponseMethodsStep({ methods, locked, onChange }: { methods: AssessmentMethod[]; locked: boolean; onChange: (value: AssessmentMethod[]) => void }) {
+  const toggle = (method: AssessmentMethod) => {
+    if (locked) return;
+    const selected = methods.includes(method);
+    if (selected && methods.length === 1) return;
+    onChange(selected ? methods.filter(item => item !== method) : responseMethodOptions.map(item => item.id).filter(item => [...methods, method].includes(item)));
+  };
+  return <section className="design-response-methods" aria-labelledby="response-method-title">
+    <header><div><p className="kicker">RESPONSE & EVIDENCE</p><h2 id="response-method-title">학생은 어떤 방식으로 답하나요?</h2><p>한 가지 이상 선택하세요. 여러 방식을 선택하면 학생 시험지에 선택한 응답 탭만 표시됩니다.</p></div><strong>{methods.length}개 선택</strong></header>
+    <div className="design-method-grid" role="group" aria-label="학생 응답 및 평가 증거 수집 방식">
+      {responseMethodOptions.map(option => {
+        const selected = methods.includes(option.id);
+        return <button type="button" key={option.id} aria-pressed={selected} disabled={locked} className={selected ? "selected" : ""} onClick={() => toggle(option.id)}>
+          <span>{option.icon}</span><div><small>{option.badge}</small><strong>{option.title}</strong><p>{option.description}</p></div><b>{selected ? "✓" : "+"}</b>
+        </button>;
+      })}
+    </div>
+    <p className="design-method-note"><b>개인정보 보호:</b> 사진·음성·화면 녹화는 이름·번호를 제외하고 학교 승인 설정이 켜진 경우에만 비공개 저장소와 선택한 AI 제공자를 사용합니다. 화면 녹화는 원본을 교사가 직접 검토하며 자동 성취 판단에는 단독 사용하지 않습니다.</p>
+  </section>;
+}
+
 function QuestionsStep({ questions, rubric, standards, locked, onChange }: { questions: QuestionDraft[]; rubric: RubricDraftItem[]; standards: AlignmentCandidate[]; locked: boolean; onChange: (value: QuestionDraft[]) => void }) {
   if (!questions.length) return <div className="design-empty-stage"><span>05</span><h2>평가 문항을 생성할 차례입니다.</h2><p>각 문항은 하나의 성취기준과 루브릭 기준에 연결되고, 학생이 보여야 할 증거까지 함께 저장됩니다.</p></div>;
   const update = (index: number, patch: Partial<QuestionDraft>) => onChange(questions.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
@@ -174,8 +208,8 @@ function ValidityStep({ validity }: { validity: DesignSessionRecord["validity"] 
 }
 
 function ApprovalStep({ session, readiness }: { session: DesignSessionRecord; readiness: Record<string, boolean> }) {
-  const checks = [["수업자료", readiness.source], ["성취기준", readiness.standards], ["성공 기준", readiness.competency], ["루브릭", readiness.rubric], ["평가 문항", readiness.questions], ["타당도 점검", readiness.validity && !session.validity?.blocked]] as const;
-  return <div className="design-approval"><div className="design-approval-mark">{session.status === "approved" ? "✓" : "M"}</div><h2>{session.status === "approved" ? "평가 초안이 생성되었습니다." : "선생님의 최종 승인을 기다립니다."}</h2><p>승인하면 현재 설계가 기존 평가 보관함에 초안으로 생성됩니다. 이후 학급을 선택하고 QR·링크로 배포할 수 있습니다.</p><div className="design-approval-checks">{checks.map(([label, ready]) => <span className={ready ? "ready" : ""} key={label}><b>{ready ? "✓" : "·"}</b>{label}</span>)}</div><div className="design-approval-summary"><span>{session.grade}학년 {session.subject}</span><strong>{session.title}</strong><p>{session.learningGoal}</p><small>{selectedCount(session)}개 성취기준 · {session.blueprint?.rubric.length ?? 0}개 루브릭 기준 · {session.blueprint?.questions.length ?? 0}문항</small></div></div>;
+  const checks = [["수업자료", readiness.source], ["성취기준", readiness.standards], ["성공 기준", readiness.competency], ["루브릭", readiness.rubric], ["평가 문항", readiness.questions], ["응답 방식", readiness.methods], ["타당도 점검", readiness.validity && !session.validity?.blocked]] as const;
+  return <div className="design-approval"><div className="design-approval-mark">{session.status === "approved" ? "✓" : "M"}</div><h2>{session.status === "approved" ? "평가 초안이 생성되었습니다." : "선생님의 최종 승인을 기다립니다."}</h2><p>승인하면 현재 설계가 기존 평가 보관함에 초안으로 생성됩니다. 이후 학급을 선택하고 QR·링크로 배포할 수 있습니다.</p><div className="design-approval-checks">{checks.map(([label, ready]) => <span className={ready ? "ready" : ""} key={label}><b>{ready ? "✓" : "·"}</b>{label}</span>)}</div><div className="design-approval-summary"><span>{session.grade}학년 {session.subject}</span><strong>{session.title}</strong><p>{session.learningGoal}</p><small>{selectedCount(session)}개 성취기준 · {session.blueprint?.rubric.length ?? 0}개 루브릭 기준 · {session.blueprint?.questions.length ?? 0}문항 · {session.blueprint?.methods.length ?? 0}개 응답 방식</small></div></div>;
 }
 
 const selectedCount = (session: DesignSessionRecord) => session.standards.filter(item => item.state === "selected").length;

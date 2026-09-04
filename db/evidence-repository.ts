@@ -152,7 +152,7 @@ export function createEvidenceRepository(query: Query) {
     },
 
     async createAsset(attemptId: string, input: {
-      questionId: string; modality: "photo" | "speech"; blobPathname: string; originalFilename: string;
+      questionId: string; modality: "photo" | "speech" | "screen"; blobPathname: string; originalFilename: string;
       mimeType: string; byteSize: number; sha256: string; identifiersRemovedConfirmed: boolean; durationSeconds?: number | null;
     }) {
       const responseId = randomUUID();

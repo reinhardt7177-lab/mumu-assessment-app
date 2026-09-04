@@ -1,6 +1,6 @@
 import { z } from "zod";
 import curriculum from "../data/achievement-standards.2022.json";
-import { AppError, validateAssessment, type AssessmentDefinition } from "./assessment-domain";
+import { AppError, assessmentMethodSchema, validateAssessment, type AssessmentDefinition } from "./assessment-domain";
 
 export const elementarySubjectSchema = z.enum(["국어", "사회", "수학", "과학", "도덕", "영어"]);
 export const designSourceSchema = z.object({
@@ -88,6 +88,7 @@ export const designDraftPatchSchema = z.object({
   competency: competencyUnpackSchema.optional(),
   rubric: z.array(rubricDraftItemSchema).min(1).max(10).optional(),
   questions: z.array(questionDraftSchema).min(1).max(20).optional(),
+  methods: z.array(assessmentMethodSchema).min(1).max(5).optional(),
   validity: validityAuditSchema.optional(),
 }).refine(value => Object.keys(value).length > 0);
 
@@ -229,7 +230,7 @@ export function toAssessmentDefinition(session: DesignSessionRecord): Assessment
     learningGoal: session.learningGoal,
     type: "독립 수행평가",
     standardCodes: selected.map(item => item.code),
-    methods: ["text"],
+    methods: session.blueprint.methods,
     grading: session.blueprint.grading,
     rubric: session.blueprint.rubric.map(item => ({ name: item.name, standardCode: item.standardCode, high: item.high, middle: item.middle, low: item.low })),
     questions: session.blueprint.questions.map(item => ({ id: item.id, prompt: item.prompt, kind: item.kind, standardCode: item.standardCode, criterion: item.criterion, points: item.points })),

@@ -44,7 +44,7 @@ async function preparedSession(ownerId: string) {
   session = await designs.saveCompetency(session.id, ownerId, competency, "basic_draft");
   const rubric = basicRubricDraft(competency);
   const questions = basicQuestionDraft(rubric);
-  session = await designs.saveBlueprint(session.id, ownerId, { rubric, questions, source: "basic_draft" });
+  session = await designs.saveBlueprint(session.id, ownerId, { rubric, questions, methods: ["text", "photo", "speech", "chat", "screen"], source: "basic_draft" });
   const validity = runDeterministicValidityAudit({ learningGoal: session.learningGoal, standards: session.standards, rubric, questions });
   assert.equal(validity.blocked, false);
   return designs.saveValidity(session.id, ownerId, validity, "basic_draft");
@@ -59,6 +59,7 @@ test("교사별 설계 작업을 분리하고 모든 편집 단계를 버전으�
   assert.ok(session.competency);
   assert.ok(session.blueprint?.rubric.length);
   assert.ok(session.blueprint?.questions.length);
+  assert.deepEqual(session.blueprint?.methods, ["text", "photo", "speech", "chat", "screen"]);
   assert.equal((await designs.list(ownerId)).length, 1);
   assert.equal((await designs.list(`teacher-${crypto.randomUUID()}`)).length, 0);
   await assert.rejects(designs.get(session.id, `teacher-${crypto.randomUUID()}`), status(404));
@@ -80,6 +81,7 @@ test("통과한 타당도 감사 뒤 기존 평가 보관함에 한 번만 승�
   assert.equal(assessment.definition.title, session.title);
   assert.equal(assessment.status, "draft");
   assert.deepEqual(assessment.definition.standardCodes, ["6사01-01"]);
+  assert.deepEqual(assessment.definition.methods, ["text", "photo", "speech", "chat", "screen"]);
   assert.equal((await designs.get(session.id, ownerId)).status, "approved");
   await assert.rejects(designs.updateBasics(session.id, ownerId, { title: "승인 후 변경" }), status(409));
 });

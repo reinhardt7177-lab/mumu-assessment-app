@@ -120,6 +120,25 @@
 .design-criterion-list article > b { width: 32px; height: 32px; border-radius: 10px; color: #fff; background: #173f5c; display: grid; place-items: center; }
 .design-criterion-list article > div { display: grid; grid-template-columns: 180px 1fr 115px; gap: 8px; }
 .design-criterion-list textarea { min-height: 70px; resize: vertical; }
+.design-question-stage { display: grid; gap: 22px; }
+.design-response-methods { padding: 20px; border: 1px solid #cfe2df; border-radius: 18px; background: linear-gradient(145deg, #f3fbf9, #f8fafc); display: grid; gap: 15px; }
+.design-response-methods > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.design-response-methods > header h2 { margin: 4px 0 5px; color: #173f52; font-size: 19px; letter-spacing: -.03em; }
+.design-response-methods > header p:not(.kicker) { color: #687e85; font-size: 10px; line-height: 1.55; }
+.design-response-methods > header > strong { flex: 0 0 auto; padding: 7px 10px; border-radius: 999px; color: #0d776f; background: #dff4ef; font-size: 9px; }
+.design-method-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 9px; }
+.design-method-grid button { position: relative; min-height: 145px; padding: 14px; border: 1px solid #d7e3e2; border-radius: 14px; color: #48616b; background: #fff; display: grid; grid-template-columns: 34px 1fr auto; align-items: start; gap: 10px; text-align: left; cursor: pointer; transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease, background .16s ease; }
+.design-method-grid button:hover:not(:disabled) { transform: translateY(-2px); border-color: #74c7be; box-shadow: 0 10px 22px rgba(18,94,92,.09); }
+.design-method-grid button.selected { border-color: #1aa096; color: #173f4e; background: #edf9f6; box-shadow: inset 0 0 0 1px rgba(26,160,150,.16); }
+.design-method-grid button > span { width: 34px; height: 34px; border-radius: 10px; color: #126f69; background: #e2f4f0; display: grid; place-items: center; font-size: 15px; font-weight: 900; }
+.design-method-grid button > div { min-width: 0; display: grid; gap: 4px; }
+.design-method-grid button small { width: fit-content; padding: 3px 6px; border-radius: 999px; color: #61747a; background: #edf2f2; font-size: 7px; font-weight: 900; }
+.design-method-grid button strong { color: inherit; font-size: 11px; line-height: 1.35; }
+.design-method-grid button p { color: #74858a; font-size: 8px; line-height: 1.55; }
+.design-method-grid button > b { width: 23px; height: 23px; border: 1px solid #cfdddb; border-radius: 50%; color: #7b8b8e; background: #fff; display: grid; place-items: center; font-size: 10px; }
+.design-method-grid button.selected > b { border-color: #199a90; color: #fff; background: #199a90; }
+.design-method-note { padding: 10px 12px; border-radius: 10px; color: #65777d; background: rgba(255,255,255,.82); font-size: 8px; line-height: 1.65; }
+.design-method-note b { color: #395965; }
 .design-rubric-stack, .design-question-stack { display: grid; gap: 15px; }
 .design-rubric-stack > article, .design-question-stack > article { padding: 18px; border: 1px solid #d9e4e4; border-radius: 16px; background: #fbfcfc; }
 .design-rubric-stack article > header, .design-question-stack article > header { margin-bottom: 11px; display: flex; align-items: center; justify-content: space-between; gap: 15px; }
@@ -182,6 +201,10 @@
   .design-criterion-list article > div { grid-template-columns: 1fr 1.5fr; }
   .design-criterion-list select { grid-column: 1 / -1; }
   .design-rubric-levels { grid-template-columns: 1fr; }
+  .design-response-methods { padding: 16px 13px; }
+  .design-response-methods > header { flex-direction: column; gap: 8px; }
+  .design-method-grid { grid-template-columns: 1fr 1fr; }
+  .design-method-grid button { min-height: 128px; }
 }
 
 @media (max-width: 760px) {

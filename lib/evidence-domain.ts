@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const responseModalitySchema = z.enum(["photo", "speech", "chat"]);
+export const responseModalitySchema = z.enum(["photo", "speech", "chat", "screen"]);
 export const assistanceLevelSchema = z.enum(["independent", "teacher_prompt", "step_hint", "example", "scaffolded"]);
 export const helpTypeSchema = z.enum(["none", "prompt", "step_hint", "example"]);
 
@@ -83,7 +83,7 @@ export type ResponseEvidenceRecord = {
   id: string;
   attemptId: string;
   questionId: string;
-  modality: "photo" | "speech" | "chat";
+  modality: "photo" | "speech" | "chat" | "screen";
   assistanceLevel: "independent" | "teacher_prompt" | "step_hint" | "example" | "scaffolded";
   state: "capturing" | "ready" | "submitted" | "error";
   assets: EvidenceAssetRecord[];

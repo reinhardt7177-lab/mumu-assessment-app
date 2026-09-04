@@ -40,7 +40,7 @@ type UploadPreview = {
 const subjects = ["국어", "사회", "수학", "과학", "도덕", "영어"];
 const stepNames = ["자료", "성취기준", "성공 기준", "루브릭", "문항", "타당도", "승인"];
 const methodLabel: Record<string, string> = {
-  text: "글쓰기·선다형", photo: "손글씨 사진", speech: "말하기", chat: "챗봇 대화", observation: "관찰 기록",
+  text: "글쓰기·선다형", photo: "손글씨 사진", speech: "말하기", chat: "챗봇 대화", screen: "화면 녹화", observation: "관찰 기록",
 };
 const emptyForm: FormState = {
   title: "", grade: 6, subject: "사회", learningGoal: "", sourceText: "",

@@ -15,6 +15,9 @@ export const questionSchema = z.object({
   points: z.number().int().min(1).max(100),
 });
 
+export const assessmentMethodSchema = z.enum(["text", "photo", "speech", "chat", "screen"]);
+export type AssessmentMethod = z.infer<typeof assessmentMethodSchema>;
+
 export const assessmentSchema = z.object({
   title: z.string().trim().min(2).max(120),
   subject: z.string().regex(/^[1-6]학년 (국어|사회|수학|과학|도덕|영어)$/),
@@ -22,7 +25,7 @@ export const assessmentSchema = z.object({
   type: z.enum(["독립 수행평가", "지원형 형성평가"]),
   standardCodes: z.array(z.string()).min(1).max(5),
   questions: z.array(questionSchema).min(1).max(20),
-  methods: z.array(z.enum(["text", "photo", "speech", "chat"])).min(1).max(4),
+  methods: z.array(assessmentMethodSchema).min(1).max(5),
   rubric: z.array(z.object({
     name: z.string().trim().min(1).max(80),
     standardCode: z.string().min(4).max(30).optional(),
