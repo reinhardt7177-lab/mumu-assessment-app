@@ -2,6 +2,7 @@
 
 - 요구와 진행 상태: [운영 현황](docs/OPERATING_STATUS.md)
 - 제품 북극성과 전체 구조: [교육과정 평가 마스터 설계](docs/CURRICULUM_ASSESSMENT_MASTER.md)
+- 단계별 개발·검증 계획: [종합 평가 플랫폼 구현 로드맵](docs/IMPLEMENTATION_ROADMAP.md)
 - 실행 안내: [README](README.md)
 - 개발 에이전트 규칙: [AGENTS](AGENTS.md)
 - 성취기준 출처와 추출 검증: [보고서](data/achievement-standards.2022.md)
