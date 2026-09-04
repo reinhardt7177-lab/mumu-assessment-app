@@ -191,8 +191,18 @@ export default function DesignStudioHome({
   return <div className="design-home teacher-surface">
     <section className="design-hero">
       <div><p className="kicker">ASSESSMENT DESIGN STUDIO</p><h1>가지고 계신 수업자료가<br />근거 있는 평가로.</h1><p>학교 평가계획이나 지도안을 불러오면 학년·교과·단원·성취기준을 분석하고, 교사는 초안을 확인하고 고칩니다.</p></div>
-      <div className="design-hero-flow"><span>자료 선택</span><i>→</i><span>자동 분석</span><i>→</i><span>루브릭·문항</span><i>→</i><span>교사 승인</span></div>
-      <button className="design-light-button" type="button" onClick={() => setCreating(current => !current)}>{creating ? "설계 닫기" : "＋ 새 평가 설계"}</button>
+      <div className="design-hero-side">
+        <div className="design-hero-flow" aria-label="평가 설계 흐름">
+          <div className="design-flow-heading"><span>평가 설계 흐름</span><small>자료를 불러오면 문항 초안까지 자동 연결</small></div>
+          <ol>
+            <li><b>1</b><span><small>불러오기</small><strong>자료 선택</strong></span></li>
+            <li><b>2</b><span><small>교육과정 정렬</small><strong>자동 분석</strong></span></li>
+            <li><b>3</b><span><small>교사 수정</small><strong>루브릭·문항</strong></span></li>
+            <li><b>4</b><span><small>배포 전 확인</small><strong>교사 승인</strong></span></li>
+          </ol>
+        </div>
+        <button className="design-light-button" type="button" onClick={() => setCreating(current => !current)}>{creating ? "설계 영역 닫기" : "＋ 새 평가 설계 시작"}</button>
+      </div>
     </section>
 
     {creating && <section className="design-create-card source-first-card">
