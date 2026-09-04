@@ -8,11 +8,13 @@ export class AppError extends Error {
 export const questionSchema = z.object({
   id: z.string().min(1).max(64).regex(/^[\w-]+$/),
   prompt: z.string().trim().min(5).max(2000),
-  kind: z.enum(["서술형", "선택형", "말하기"]),
+  kind: z.enum(["선택형", "단답형", "서술형", "말하기"]),
   standardCode: z.string().min(4).max(30),
   criterion: z.string().trim().min(1).max(80),
   rubricCriterionId: z.string().uuid().optional(),
   points: z.number().int().min(1).max(100),
+  choices: z.array(z.string().trim().min(1).max(300)).max(8).optional(),
+  answerKey: z.array(z.string().trim().min(1).max(500)).max(10).optional(),
 });
 
 export const assessmentMethodSchema = z.enum(["text", "photo", "speech", "chat", "screen"]);
@@ -50,6 +52,8 @@ export const curriculumAssessmentLinkSchema = z.object({
 export type CurriculumAssessmentLinkInput = z.infer<typeof curriculumAssessmentLinkSchema>;
 export type AssessmentCreateInput = { definition: AssessmentDefinition; curriculumLink: CurriculumAssessmentLinkInput | null };
 export type AssessmentQuestion = z.infer<typeof questionSchema>;
+export type StudentAssessmentQuestion = Omit<AssessmentQuestion, "answerKey">;
+export type StudentAssessmentDefinition = Omit<AssessmentDefinition, "questions"> & { questions: StudentAssessmentQuestion[] };
 export type AssessmentRecord = {
   id: string; ownerId: string; shareCode: string; status: "draft" | "published" | "closed";
   definition: AssessmentDefinition; version: number; createdAt: string;
@@ -86,6 +90,17 @@ export function validateAssessment(input: unknown): AssessmentDefinition {
     throw new AppError(400, "선택한 초등 학년군·교과에 맞는 성취기준을 선택해 주세요.");
   }
   if (new Set(value.questions.map(q => q.id)).size !== value.questions.length) throw new AppError(400, "문항 번호가 중복되었습니다.");
+  for (const question of value.questions) {
+    const choices = question.choices ?? [];
+    const answerKey = question.answerKey ?? [];
+    if (question.kind === "선택형") {
+      if (choices.length < 2 || new Set(choices).size !== choices.length) throw new AppError(400, "선택형 문항은 서로 다른 보기를 2개 이상 입력해 주세요.");
+      if (answerKey.length !== 1 || !choices.includes(answerKey[0])) throw new AppError(400, "선택형 문항의 정답을 보기 중에서 하나 선택해 주세요.");
+    }
+    if (question.kind === "단답형" && (answerKey.length < 1 || choices.length > 0)) throw new AppError(400, "단답형 문항은 보기 없이 인정할 정답을 한 개 이상 입력해 주세요.");
+    if ((question.kind === "서술형" || question.kind === "말하기") && (choices.length > 0 || answerKey.length > 0)) throw new AppError(400, "서술형·말하기 문항은 단일 정답이 아니라 루브릭과 기대 증거로 판단해 주세요.");
+  }
+  if (value.questions.some(question => question.kind === "말하기") && !value.methods.includes("speech")) throw new AppError(400, "말하기 문항을 사용하려면 오럴 테스트 응답 방식을 선택해 주세요.");
   const rubricKeys = value.rubric.map(r => r.rubricCriterionId ?? `${r.standardCode ?? "*"}:${r.name}`);
   if (new Set(rubricKeys).size !== rubricKeys.length) throw new AppError(400, "루브릭 기준 연결이 중복되었습니다.");
   if (value.rubric.some(r => r.standardCode && !value.standardCodes.includes(r.standardCode))) throw new AppError(400, "루브릭의 성취기준 연결을 확인해 주세요.");
@@ -110,8 +125,41 @@ export function validateAnswers(input: unknown, definition: AssessmentDefinition
   if (!parsed.success) throw new AppError(400, "답안 형식을 확인해 주세요. 문항당 최대 10,000자입니다.");
   const questionIds = new Set(definition.questions.map(q => q.id));
   if (Object.keys(parsed.data).some(id => !questionIds.has(id))) throw new AppError(400, "이 평가에 없는 문항입니다.");
+  if (definition.questions.some(question => question.kind === "선택형" && parsed.data[question.id]?.trim() && !(question.choices ?? []).includes(parsed.data[question.id]))) {
+    throw new AppError(400, "선택형 문항은 제시된 보기 중에서 답을 골라 주세요.");
+  }
   if (complete && definition.questions.some(q => !parsed.data[q.id]?.trim())) throw new AppError(400, "모든 문항에 답한 뒤 제출해 주세요.");
   return parsed.data;
+}
+
+export function publicAssessmentDefinition(definition: AssessmentDefinition): StudentAssessmentDefinition {
+  return {
+    ...definition,
+    questions: definition.questions.map(question => ({
+      id: question.id,
+      prompt: question.prompt,
+      kind: question.kind,
+      standardCode: question.standardCode,
+      criterion: question.criterion,
+      rubricCriterionId: question.rubricCriterionId,
+      points: question.points,
+      choices: question.choices,
+    })),
+  };
+}
+
+const normalizeObjectiveAnswer = (value: string) => value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("ko-KR");
+
+export function objectiveScoreDraft(question: AssessmentQuestion, answer: string) {
+  if (question.kind !== "선택형" && question.kind !== "단답형") return null;
+  const accepted = question.answerKey ?? [];
+  if (!accepted.length || !answer.trim()) return null;
+  const correct = accepted.some(value => normalizeObjectiveAnswer(value) === normalizeObjectiveAnswer(answer));
+  return {
+    questionId: question.id,
+    points: correct ? question.points : 0,
+    reason: correct ? "정답 기준과 일치한 자동 채점 초안입니다." : "정답 기준과 일치하지 않아 교사 확인이 필요합니다.",
+  };
 }
 
 export const reviewInputSchema = z.object({

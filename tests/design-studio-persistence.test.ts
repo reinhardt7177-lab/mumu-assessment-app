@@ -30,6 +30,23 @@ before(async () => {
 });
 after(async () => { await pg.close(); });
 
+test("문항 유형 조합과 말하기 응답 방식의 타당도를 점검", () => {
+  const standards = [{ code: "6사01-01", domain: "정치", content: "민주주의의 의미와 중요성을 이해하고 시민의 역할을 탐색한다.", rationale: "학습 목표에 직접 연결됩니다.", confidence: .9, state: "selected" as const }];
+  const rubric = [{ id: "criterion-1", name: "개념 이해", description: "민주주의의 의미를 정확히 설명한다.", standardCode: "6사01-01", high: "정확한 개념과 사례를 연결하여 스스로 설명한다.", middle: "핵심 개념을 설명하지만 사례 연결은 보완이 필요하다.", low: "핵심 개념을 부분적으로 표현하며 안내가 필요하다." }];
+  const selectedOnly = runDeterministicValidityAudit({
+    learningGoal: "민주주의의 의미와 시민의 역할을 설명한다.", standards, rubric, methods: ["text"],
+    questions: [{ id: "question-1", prompt: "민주주의의 뜻과 가장 가까운 것을 고르세요.", kind: "선택형", standardCode: "6사01-01", criterion: "개념 이해", points: 10, choices: ["시민이 주권을 행사하는 정치", "한 사람이 모든 권력을 가지는 정치"], answerKey: ["시민이 주권을 행사하는 정치"], evidenceExpected: "민주주의의 핵심 개념을 구별한다." }],
+  });
+  assert.equal(selectedOnly.blocked, false);
+  assert.ok(selectedOnly.threats.some(item => item.issue.includes("객관식·단답형만")));
+
+  const speakingWithoutAudio = runDeterministicValidityAudit({
+    learningGoal: "민주주의의 의미와 시민의 역할을 설명한다.", standards, rubric, methods: ["text"],
+    questions: [{ id: "question-1", prompt: "민주주의의 의미를 자신의 말로 설명하세요.", kind: "말하기", standardCode: "6사01-01", criterion: "개념 이해", points: 10, choices: [], answerKey: [], evidenceExpected: "민주주의의 핵심 개념을 말로 설명한다." }],
+  });
+  assert.equal(speakingWithoutAudio.blocked, true);
+});
+
 async function preparedSession(ownerId: string) {
   let session = await designs.create(ownerId, {
     title: "민주주의의 발전 서술형 평가", grade: 6, subject: "사회",

@@ -55,13 +55,21 @@ export const rubricDraftSchema = z.object({ rubric: z.array(rubricDraftItemSchem
 export const questionDraftSchema = z.object({
   id: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9_-]*$/),
   prompt: z.string().trim().min(5).max(2000),
-  kind: z.enum(["서술형", "선택형"]),
+  kind: z.enum(["선택형", "단답형", "서술형", "말하기"]),
   standardCode: z.string().trim().min(4).max(30),
   criterion: z.string().trim().min(1).max(80),
   points: z.number().int().min(1).max(100),
+  choices: z.array(z.string().trim().min(1).max(300)).max(8).optional(),
+  answerKey: z.array(z.string().trim().min(1).max(500)).max(10).optional(),
   evidenceExpected: z.string().trim().min(5).max(1000),
 });
 export const assessmentDraftSchema = z.object({ questions: z.array(questionDraftSchema).min(1).max(20) });
+export const assessmentGenerationDraftSchema = z.object({
+  questions: z.array(questionDraftSchema.extend({
+    choices: z.array(z.string().trim().min(1).max(300)).max(8),
+    answerKey: z.array(z.string().trim().min(1).max(500)).max(10),
+  })).min(1).max(20),
+});
 
 export const validityThreatSchema = z.object({
   severity: z.enum(["major", "moderate", "minor"]),
@@ -196,7 +204,7 @@ export function basicQuestionDraft(rubric: RubricDraftItem[]): QuestionDraft[] {
   }));
 }
 
-export function runDeterministicValidityAudit(input: Pick<DesignSessionRecord, "learningGoal" | "standards"> & { rubric: RubricDraftItem[]; questions: QuestionDraft[] }): ValidityAudit {
+export function runDeterministicValidityAudit(input: Pick<DesignSessionRecord, "learningGoal" | "standards"> & { rubric: RubricDraftItem[]; questions: QuestionDraft[]; methods?: AssessmentDefinition["methods"] }): ValidityAudit {
   const selectedCodes = new Set(input.standards.filter(item => item.state === "selected").map(item => item.code));
   const questionCodes = new Set(input.questions.map(item => item.standardCode));
   const criterionNames = new Set(input.rubric.map(item => item.name));
@@ -204,7 +212,10 @@ export function runDeterministicValidityAudit(input: Pick<DesignSessionRecord, "
   for (const code of selectedCodes) if (!questionCodes.has(code)) threats.push({ severity: "major", issue: `${code} 성취기준을 확인할 문항이 없습니다.`, recommendation: "해당 성취기준의 관찰 가능한 수행을 요구하는 문항을 추가하세요." });
   if (input.questions.some(item => !criterionNames.has(item.criterion))) threats.push({ severity: "major", issue: "일부 문항이 루브릭 기준과 연결되지 않았습니다.", recommendation: "각 문항에 하나의 명확한 루브릭 기준을 연결하세요." });
   if (input.rubric.some(item => new Set([item.high, item.middle, item.low]).size < 3)) threats.push({ severity: "major", issue: "수준별 루브릭 서술이 구분되지 않는 기준이 있습니다.", recommendation: "상·중·하를 양의 차이가 아니라 수행의 질적 차이로 다시 서술하세요." });
-  if (input.questions.every(item => item.kind === "선택형")) threats.push({ severity: "moderate", issue: "선택형만으로는 학생의 설명 과정과 근거를 충분히 확인하기 어렵습니다.", recommendation: "서술형 문항을 포함해 생각의 과정과 근거를 직접 수합하세요." });
+  if (input.questions.some(item => item.kind === "선택형" && ((item.choices ?? []).length < 2 || (item.answerKey ?? []).length !== 1 || !(item.choices ?? []).includes((item.answerKey ?? [])[0])))) threats.push({ severity: "major", issue: "보기 또는 정답이 완성되지 않은 선택형 문항이 있습니다.", recommendation: "서로 다른 보기를 2개 이상 쓰고 그중 정답 하나를 지정하세요." });
+  if (input.questions.some(item => item.kind === "단답형" && !(item.answerKey ?? []).length)) threats.push({ severity: "major", issue: "인정할 정답이 없는 단답형 문항이 있습니다.", recommendation: "표기 차이를 고려해 인정할 정답을 한 개 이상 입력하세요." });
+  if (input.questions.every(item => item.kind === "선택형" || item.kind === "단답형")) threats.push({ severity: "moderate", issue: "객관식·단답형만으로는 학생의 설명 과정과 근거를 충분히 확인하기 어렵습니다.", recommendation: "학습 목표가 설명·논증을 포함한다면 서술형이나 말하기 문항을 함께 사용하세요." });
+  if (input.questions.some(item => item.kind === "말하기") && input.methods && !input.methods.includes("speech")) threats.push({ severity: "major", issue: "말하기 문항이 있지만 오럴 테스트 응답 방식이 선택되지 않았습니다.", recommendation: "오럴 테스트를 켜거나 문항 유형을 서술형으로 바꾸세요." });
   if (input.questions.length < 2 && selectedCodes.size > 1) threats.push({ severity: "moderate", issue: "넓은 학습 목표에 비해 증거를 수합할 문항 수가 적습니다.", recommendation: "성취기준별로 독립적인 증거가 드러나도록 문항을 보완하세요." });
   const blocked = threats.some(item => item.severity === "major");
   return {
@@ -233,6 +244,6 @@ export function toAssessmentDefinition(session: DesignSessionRecord): Assessment
     methods: session.blueprint.methods,
     grading: session.blueprint.grading,
     rubric: session.blueprint.rubric.map(item => ({ name: item.name, standardCode: item.standardCode, high: item.high, middle: item.middle, low: item.low })),
-    questions: session.blueprint.questions.map(item => ({ id: item.id, prompt: item.prompt, kind: item.kind, standardCode: item.standardCode, criterion: item.criterion, points: item.points })),
+    questions: session.blueprint.questions.map(item => ({ id: item.id, prompt: item.prompt, kind: item.kind, standardCode: item.standardCode, criterion: item.criterion, points: item.points, choices: item.choices, answerKey: item.answerKey })),
   });
 }

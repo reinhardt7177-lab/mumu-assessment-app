@@ -13,10 +13,10 @@ function firstMatch(text: string, pattern: RegExp) {
 }
 
 function analyzeSource(fileName: string, text: string) {
-  const sample = (fileName + "\n" + text.slice(0, 12000)).replace(/\u0000/g, "");
+  const sample = (fileName + "\n" + text.slice(0, 12000)).split(String.fromCharCode(0)).join("");
   const detectedGrade = Number(firstMatch(sample, /([1-6])\s*학년/));
   const grade = detectedGrade >= 1 && detectedGrade <= 6 ? detectedGrade : 6;
-  const subject = subjects.find(item => new RegExp("(^|[\\s·_()\[\]-])" + item + "(과|[\\s·_()\[\]-]|$)", "m").test(sample)) ?? "사회";
+  const subject = subjects.find(item => new RegExp("(^|[\\s·_()\\[\\]-])" + item + "(과|[\\s·_()\\[\\]-]|$)", "m").test(sample)) ?? "사회";
   const unit = firstMatch(sample, /(?:단원(?:명)?|수업\s*주제|주제)\s*[:：]?\s*([^\r\n]{2,100})/i);
   const goal = firstMatch(sample, /(?:학습\s*목표|성취\s*목표|평가\s*목표|평가\s*중점)\s*[:：]?\s*([^\r\n]{5,500})/i);
   const baseName = fileName.replace(/\.[^.]+$/, "").replace(/[+_]+/g, " ").trim().slice(0, 100);

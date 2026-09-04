@@ -27,11 +27,11 @@ export async function POST(_request: Request, { params }: { params: Promise<{ se
     const repository = getDesignStudioRepository();
     const session = await repository.get(sessionId, teacherId);
     if (!session.blueprint?.rubric.length || !session.blueprint.questions.length) throw new AppError(409, "루브릭과 평가 문항을 모두 완성해 주세요.");
-    const baseline = runDeterministicValidityAudit({ learningGoal: session.learningGoal, standards: session.standards, rubric: session.blueprint.rubric, questions: session.blueprint.questions });
-    const inputJson = { learningGoal: session.learningGoal, grade: session.grade, subject: session.subject, standards: session.standards.filter(item => item.state === "selected"), rubric: session.blueprint.rubric, questions: session.blueprint.questions };
+    const baseline = runDeterministicValidityAudit({ learningGoal: session.learningGoal, standards: session.standards, rubric: session.blueprint.rubric, questions: session.blueprint.questions, methods: session.blueprint.methods });
+    const inputJson = { learningGoal: session.learningGoal, grade: session.grade, subject: session.subject, standards: session.standards.filter(item => item.state === "selected"), rubric: session.blueprint.rubric, questions: session.blueprint.questions, methods: session.blueprint.methods };
     try {
       const result = await runDesignGeneration({
-        teacherId, sessionId, feature: "validity_audit", promptVersion: "classroom-validity-v1",
+        teacherId, sessionId, feature: "validity_audit", promptVersion: "classroom-validity-v2",
         schemaName: "AssessmentValidityAudit", schemaDescription: "구인·내용·신뢰도·결과 타당도를 점검한 교사용 평가 품질 감사",
         schema: validityAuditSchema, inputJson,
         system: [
@@ -39,6 +39,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ se
           "이 평가는 무엇을 측정하는지가 아니라 결과를 어떤 목적으로 해석·사용할 수 있는지를 검토하세요.",
           "구인 무관 변인, 구인 과소대표, 채점자 간 신뢰도, 학생 집단별 불공정 장벽, 표면학습 유발 가능성을 확인하세요.",
           "성취기준 또는 루브릭 연결 누락, 채점 불가능한 문항은 major이며 blocked=true로 하세요.",
+          "객관식·단답형·서술형·말하기의 조합이 의도한 학습을 충분히 표집하는지, 문항 유형과 응답 방식이 맞는지도 확인하세요.",
           "비판만 하지 말고 교사가 바로 고칠 수 있는 문장으로 권고하세요.",
         ].join("\n"),
         prompt: `평가 목적: 초등 교실의 형성평가 및 단원 성취 판단\n${JSON.stringify(inputJson, null, 2)}`,

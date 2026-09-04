@@ -8,12 +8,21 @@ import { requestJson } from "../lib/client-api";
 const steps = ["기본 정보", "성취기준", "평가 문항", "응답 방법", "루브릭", "저장·배포"];
 const subjects = Array.from({ length: 6 }, (_, i) => i + 1).flatMap(grade => (grade < 3 ? ["국어", "수학"] : ["국어", "사회", "수학", "과학", "도덕", "영어"]).map(subject => `${grade}학년 ${subject}`));
 const responseMethods: Array<{ id: AssessmentMethod; title: string; description: string }> = [
-  { id: "text", title: "온라인 답안", description: "화면에서 직접 작성·제출" },
+  { id: "text", title: "온라인 답안", description: "객관식 선택·단답·서술 답안" },
   { id: "photo", title: "종이 시험지·OCR", description: "손글씨 사진을 글자로 변환" },
   { id: "speech", title: "오럴 테스트", description: "녹음 후 전사 내용 확인" },
   { id: "chat", title: "평가 챗봇", description: "대화·시간·도움 수준 분석" },
   { id: "screen", title: "화면 녹화", description: "디지털 수행 과정 30초 수합" },
 ];
+const questionKindOptions: Array<{ value: AssessmentQuestion["kind"]; label: string }> = [
+  { value: "선택형", label: "객관식(선택형)" },
+  { value: "단답형", label: "단답형" },
+  { value: "서술형", label: "서술형" },
+  { value: "말하기", label: "말하기" },
+];
+const questionConfigurationIsValid = (question: AssessmentQuestion) => question.kind === "선택형"
+  ? (question.choices ?? []).length >= 2 && new Set(question.choices ?? []).size === (question.choices ?? []).length && (question.answerKey ?? []).length === 1 && (question.choices ?? []).includes((question.answerKey ?? [])[0])
+  : question.kind === "단답형" ? Boolean((question.answerKey ?? []).length) : true;
 const initialRubric: AssessmentDefinition["rubric"] = ["개념 이해", "근거 제시", "논리적 설명"].map(name => ({ name, high: "핵심 내용을 정확하고 구체적으로 설명한다.", middle: "핵심 내용을 설명하나 일부 보완이 필요하다.", low: "핵심 내용을 설명하는 데 안내와 도움이 필요하다." }));
 const historyDateFormat = new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" });
 export type CurriculumAssessmentContext = {
@@ -65,7 +74,16 @@ export default function AssessmentCreator({ onClose, onCreated, curriculumContex
   const updateQuestion = (id: string, patch: Partial<AssessmentQuestion>) => setQuestions(current => current.map(q => q.id === id ? { ...q, ...patch } : q));
   const rubricFor = (standardCode: string) => rubric.filter(item => !item.standardCode || item.standardCode === standardCode);
   const firstRubricFor = (standardCode: string) => rubricFor(standardCode)[0] ?? rubric[0];
-  const addQuestion = () => { const standardCode = standards[0]?.code ?? ""; const criterion = firstRubricFor(standardCode); setQuestions(current => [...current, { id: crypto.randomUUID(), prompt: "", kind: "서술형", standardCode, criterion: criterion.name, rubricCriterionId: criterion.rubricCriterionId, points: 10 }]); };
+  const addQuestion = () => { const standardCode = standards[0]?.code ?? ""; const criterion = firstRubricFor(standardCode); setQuestions(current => [...current, { id: crypto.randomUUID(), prompt: "", kind: "서술형", standardCode, criterion: criterion.name, rubricCriterionId: criterion.rubricCriterionId, points: 10, choices: [], answerKey: [] }]); };
+  const changeQuestionKind = (question: AssessmentQuestion, kind: AssessmentQuestion["kind"]) => {
+    if (kind === "말하기") setMethods(current => current.includes("speech") ? current : [...current, "speech"]);
+    if (kind === "선택형") {
+      const choices = (question.choices ?? []).length >= 2 ? question.choices! : ["보기 1", "보기 2", "보기 3", "보기 4"];
+      updateQuestion(question.id, { kind, choices, answerKey: question.answerKey?.[0] && choices.includes(question.answerKey[0]) ? [question.answerKey[0]] : [choices[0]] });
+      return;
+    }
+    updateQuestion(question.id, { kind, choices: [], answerKey: kind === "단답형" && question.kind === "단답형" ? question.answerKey ?? [] : [] });
+  };
   const changeQuestionStandard = (id: string, standardCode: string) => { const criterion = firstRubricFor(standardCode); updateQuestion(id, { standardCode, criterion: criterion.name, rubricCriterionId: criterion.rubricCriterionId }); };
   const changeQuestionCriterion = (id: string, standardCode: string, name: string) => { const criterion = rubricFor(standardCode).find(item => item.name === name) ?? firstRubricFor(standardCode); updateQuestion(id, { criterion: criterion.name, rubricCriterionId: criterion.rubricCriterionId }); };
   const generate = async () => {
@@ -104,7 +122,7 @@ export default function AssessmentCreator({ onClose, onCreated, curriculumContex
     } catch (reason) { setError(reason instanceof Error ? reason.message : "저장하지 못했습니다."); }
     finally { setBusy(false); }
   };
-  const valid = step === 0 ? title.trim().length >= 2 && goal.trim().length >= 5 : step === 1 ? standards.length > 0 : step === 2 ? questions.length > 0 && questions.every(q => q.prompt.trim().length >= 5 && q.points >= 1 && standards.some(s => s.code === q.standardCode)) : step === 4 ? rubric.every(r => r.name.trim() && r.high.trim().length >= 5 && r.middle.trim().length >= 5 && r.low.trim().length >= 5) && grading.upperThreshold > grading.middleThreshold : true;
+  const valid = step === 0 ? title.trim().length >= 2 && goal.trim().length >= 5 : step === 1 ? standards.length > 0 : step === 2 ? questions.length > 0 && questions.every(q => q.prompt.trim().length >= 5 && q.points >= 1 && standards.some(s => s.code === q.standardCode) && questionConfigurationIsValid(q)) : step === 4 ? rubric.every(r => r.name.trim() && r.high.trim().length >= 5 && r.middle.trim().length >= 5 && r.low.trim().length >= 5) && grading.upperThreshold > grading.middleThreshold : true;
   const total = questions.reduce((sum, q) => sum + q.points, 0);
 
   return <dialog ref={dialog} className="create-modal real-dialog" aria-labelledby="creator-title" onCancel={event => { if (busy) event.preventDefault(); else onClose(); }}>
@@ -126,7 +144,17 @@ export default function AssessmentCreator({ onClose, onCreated, curriculumContex
           return <article key={generation.id}><div><strong>{generation.title || "이름 없는 평가"}</strong><span>{generation.subject} · {generation.requestedCount}문항 · <time dateTime={generation.createdAt}>{historyDateFormat.format(new Date(generation.createdAt))}</time></span><small>{generation.learningGoal}</small></div><button type="button" disabled={busy || !compatible} onClick={() => reuseGeneration(generation)}>{compatible ? "불러오기" : "현재 기준과 다름"}</button></article>;
         })}</div>
       </details>}
-      <div className="question-list">{questions.map((q, index) => <article className="question-editor" key={q.id}><div className="question-editor-head"><strong>문항 {index + 1}</strong><button onClick={() => setQuestions(current => current.filter(item => item.id !== q.id))}>삭제</button></div><label>문항 내용<textarea value={q.prompt} maxLength={2000} onChange={e => updateQuestion(q.id, { prompt: e.target.value })} /></label><div className="question-meta"><label>성취기준<select value={q.standardCode} onChange={e => changeQuestionStandard(q.id, e.target.value)}>{standards.map(s => <option key={s.code}>{s.code}</option>)}</select></label><label>평가 기준<select value={q.criterion} onChange={e => changeQuestionCriterion(q.id, q.standardCode, e.target.value)}>{rubricFor(q.standardCode).map(r => <option key={r.rubricCriterionId ?? `${r.standardCode ?? "all"}-${r.name}`}>{r.name}</option>)}</select></label><label>배점<input type="number" min={1} max={100} value={q.points} onChange={e => updateQuestion(q.id, { points: Number(e.target.value) })} /></label></div></article>)}</div>
+      <div className="question-list">{questions.map((q, index) => {
+        const choices = q.choices ?? [];
+        return <article className="question-editor" key={q.id}>
+          <div className="question-editor-head"><strong>문항 {index + 1}</strong><div><select aria-label={`문항 ${index + 1} 유형`} value={q.kind} onChange={event => changeQuestionKind(q, event.target.value as AssessmentQuestion["kind"])}>{questionKindOptions.map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select><button onClick={() => setQuestions(current => current.filter(item => item.id !== q.id))}>삭제</button></div></div>
+          <label>문항 내용<textarea value={q.prompt} maxLength={2000} onChange={event => updateQuestion(q.id, { prompt: event.target.value })} /></label>
+          {q.kind === "선택형" && <fieldset className="question-choice-editor"><legend>보기와 정답</legend><p>정답으로 사용할 보기의 원을 선택하세요. 정답은 학생 화면에 공개되지 않습니다.</p>{choices.map((choice, choiceIndex) => <div key={choiceIndex}><input type="radio" name={`creator-correct-${q.id}`} aria-label={`${choiceIndex + 1}번 보기를 정답으로 지정`} checked={q.answerKey?.[0] === choice} onChange={() => updateQuestion(q.id, { answerKey: [choice] })} /><span>{choiceIndex + 1}</span><input value={choice} maxLength={300} aria-label={`${choiceIndex + 1}번 보기`} onChange={event => { const nextChoices = choices.map((value, i) => i === choiceIndex ? event.target.value : value); updateQuestion(q.id, { choices: nextChoices, answerKey: q.answerKey?.[0] === choice ? [event.target.value] : q.answerKey }); }} /><button type="button" disabled={choices.length <= 2} onClick={() => updateQuestion(q.id, { choices: choices.filter((_, i) => i !== choiceIndex), answerKey: q.answerKey?.[0] === choice ? [] : q.answerKey })}>삭제</button></div>)}<button type="button" className="question-add-choice" disabled={choices.length >= 8} onClick={() => updateQuestion(q.id, { choices: [...choices, `보기 ${choices.length + 1}`] })}>＋ 보기 추가</button></fieldset>}
+          {q.kind === "단답형" && <label className="question-answer-key">인정할 정답 · 한 줄에 하나<textarea value={(q.answerKey ?? []).join("\n")} onChange={event => updateQuestion(q.id, { answerKey: event.target.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean), choices: [] })} placeholder={"예: 민주주의\n민주 주의"} /><small>띄어쓰기나 표기 차이를 정답으로 인정할 때만 함께 적어 주세요.</small></label>}
+          {(q.kind === "서술형" || q.kind === "말하기") && <p className="question-kind-note">{q.kind === "말하기" ? "다음 단계에서 오럴 테스트 응답 방식을 함께 선택하세요." : "하나의 정답이 아니라 루브릭과 수행 근거로 판단합니다."}</p>}
+          <div className="question-meta"><label>성취기준<select value={q.standardCode} onChange={event => changeQuestionStandard(q.id, event.target.value)}>{standards.map(s => <option key={s.code}>{s.code}</option>)}</select></label><label>평가 기준<select value={q.criterion} onChange={event => changeQuestionCriterion(q.id, q.standardCode, event.target.value)}>{rubricFor(q.standardCode).map(r => <option key={r.rubricCriterionId ?? `${r.standardCode ?? "all"}-${r.name}`}>{r.name}</option>)}</select></label><label>배점<input type="number" min={1} max={100} value={q.points} onChange={event => updateQuestion(q.id, { points: Number(event.target.value) })} /></label></div>
+        </article>;
+      })}</div>
       <button className="add-question-button" disabled={questions.length >= 20 || busy} onClick={addQuestion}>＋ 문항 직접 추가</button>
     </div>}
     {step === 3 && <div className="wizard-body"><p className="wizard-guide">학생에게 보여 줄 응답 방식을 하나 이상 선택하세요. 선택한 방식만 QR 시험지에 표시됩니다.</p><div className="method-grid">{responseMethods.map(option => { const selected = methods.includes(option.id); return <button type="button" key={option.id} className={selected ? "selected" : ""} aria-pressed={selected} onClick={() => setMethods(current => selected ? current.length === 1 ? current : current.filter(item => item !== option.id) : responseMethods.map(item => item.id).filter(item => [...current, option.id].includes(item)))}><span>{selected ? "✓" : "＋"}</span><strong>{option.title}</strong><small>{option.description}</small></button>; })}</div><p>학생은 QR·링크로 시험지만 엽니다. 사진·음성·화면 녹화는 이름·번호를 제외하고 학교 승인 설정이 켜진 경우에만 저장됩니다.</p></div>}

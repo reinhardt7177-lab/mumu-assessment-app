@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AssessmentQuestion } from "../lib/assessment-domain";
+import type { StudentAssessmentQuestion } from "../lib/assessment-domain";
 import { requestFormData, requestJson } from "../lib/client-api";
 import type { ResponseEvidenceRecord, StudentEvidencePayload } from "../lib/evidence-domain";
 
 type Method = "text" | "photo" | "speech" | "chat" | "screen";
 type Props = {
   code: string;
-  question: AssessmentQuestion;
+  question: StudentAssessmentQuestion;
   methods: Method[];
   disabled: boolean;
   textValue: string;
@@ -22,7 +22,7 @@ type Props = {
 };
 
 const labels: Record<Method, { icon: string; title: string; description: string }> = {
-  text: { icon: "✎", title: "글로 답하기", description: "키보드로 생각과 근거 쓰기" },
+  text: { icon: "✎", title: "화면에서 답하기", description: "보기 선택 또는 글 입력" },
   photo: { icon: "▣", title: "손글씨 사진", description: "답안 영역 촬영 후 OCR 확인" },
   speech: { icon: "●", title: "말로 답하기", description: "녹음 후 전사 내용 확인" },
   chat: { icon: "⌁", title: "대화로 답하기", description: "질문을 받으며 생각 설명하기" },
@@ -198,9 +198,18 @@ export default function StudentEvidenceResponse(props: Props) {
     </div>
 
     {method === "text" && <div className="student-method-panel" role="tabpanel">
-      <label className="sr-only" htmlFor={`answer-${question.id}`}>글 답안</label>
-      <textarea id={`answer-${question.id}`} value={textValue} maxLength={10000} disabled={disabled || busy} onChange={event => props.onTextChange(event.target.value)} placeholder="나의 생각과 근거를 써주세요." />
-      <small>{textValue.length} / 10,000자</small>
+      {question.kind === "선택형" && (question.choices ?? []).length >= 2 ? <fieldset className="student-choice-list">
+        <legend>보기에서 답 하나를 고르세요.</legend>
+        {(question.choices ?? []).map((choice, index) => <label className={textValue === choice ? "selected" : ""} key={`${index}-${choice}`}><input type="radio" name={`answer-${question.id}`} value={choice} checked={textValue === choice} disabled={disabled || busy} onChange={() => props.onTextChange(choice)} /><span>{index + 1}</span><strong>{choice}</strong></label>)}
+      </fieldset> : question.kind === "단답형" || question.kind === "선택형" ? <>
+        {question.kind === "선택형" && <p className="evidence-readiness-warning">보기 구성이 확인되지 않아 직접 답을 적습니다. 선생님께 알려 주세요.</p>}
+        <label className="student-short-answer" htmlFor={`answer-${question.id}`}><span>{question.kind === "단답형" ? "짧은 답" : "답"}</span><input id={`answer-${question.id}`} value={textValue} maxLength={500} disabled={disabled || busy} onChange={event => props.onTextChange(event.target.value)} placeholder="정답을 입력하세요." autoComplete="off" /></label>
+        <small>{textValue.length} / 500자</small>
+      </> : <>
+        <label className="sr-only" htmlFor={`answer-${question.id}`}>{question.kind === "말하기" ? "말하기 문항의 글 답안" : "서술형 답안"}</label>
+        <textarea id={`answer-${question.id}`} value={textValue} maxLength={10000} disabled={disabled || busy} onChange={event => props.onTextChange(event.target.value)} placeholder={question.kind === "말하기" ? "말하기 대신 글로 답하도록 허용된 경우 이곳에 입력하세요." : "나의 생각과 근거를 써주세요."} />
+        <small>{textValue.length} / 10,000자</small>
+      </>}
     </div>}
 
     {(method === "photo" || method === "speech" || method === "screen") && <div className="student-method-panel media-answer-panel" role="tabpanel">
@@ -225,8 +234,8 @@ export default function StudentEvidenceResponse(props: Props) {
           {!recording ? <button type="button" className="outline-button" disabled={disabled || busy || !mediaReady} onClick={startScreenRecording}>▱ 화면 녹화 시작</button> : <button type="button" className="primary-button recording" onClick={stopRecording}>■ 녹화 끝내기</button>}
           <label className="evidence-file-picker compact">또는 녹화 파일 선택<input type="file" accept="video/webm,video/mp4" disabled={disabled || busy || !mediaReady} onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setRecordedSeconds(0); }} /></label>
         </div>
-        {recordedUrl && <video className="student-screen-preview" controls src={recordedUrl}>화면 녹화를 재생할 수 없습니다.</video>}
-        {screen?.assets[0] && !recordedUrl && <video className="student-screen-preview" controls src={`/api/student/${code}/evidence/assets/${screen.assets[0].id}`}>화면 녹화를 재생할 수 없습니다.</video>}
+        {recordedUrl && <video className="student-screen-preview" controls src={recordedUrl}><track kind="captions" src={captionTrack("화면 녹화에는 음성이 없습니다.")} srcLang="ko" label="음성 없음" default />화면 녹화를 재생할 수 없습니다.</video>}
+        {screen?.assets[0] && !recordedUrl && <video className="student-screen-preview" controls src={`/api/student/${code}/evidence/assets/${screen.assets[0].id}`}><track kind="captions" src={captionTrack("화면 녹화에는 음성이 없습니다.")} srcLang="ko" label="음성 없음" default />화면 녹화를 재생할 수 없습니다.</video>}
       </>}
       <label className="identifier-confirmation"><input type="checkbox" checked={identifiersRemoved} disabled={disabled || busy || !selectedFile} onChange={event => setIdentifiersRemoved(event.target.checked)} />
         <span>{method === "photo" ? "사진에 이름·번호가 보이지 않고 답안 영역만 담겼어요." : method === "speech" ? "녹음에서 이름·번호를 말하지 않았어요." : "화면에 이름·번호·알림 등 개인정보가 보이지 않아요."}</span>

@@ -242,7 +242,7 @@ export default function DesignStudioHome({
       {sourceMode === "direct" && <div className="design-source-panel direct-source-panel"><p>자료가 없거나 간단한 확인 평가를 만들 때만 사용하세요. 교육과정·지도안 불러오기가 기본 경로입니다.</p></div>}
 
       {(sourceMode === "direct" || (sourceMode === "upload" && uploadSummary)) && <div className="design-create-grid source-review-grid">
-        <label className="wide"><span>평가 이름 · 자동 입력</span><input value={form.title} onChange={event => setForm({ ...form, title: event.target.value })} placeholder="예: 민주주의의 발전 단원 서술형 평가" /></label>
+        <label className="wide"><span>평가 이름 · 자동 입력</span><input value={form.title} onChange={event => setForm({ ...form, title: event.target.value })} placeholder="예: 민주주의의 발전 단원 평가" /></label>
         <label><span>학년</span><select value={form.grade} onChange={event => setForm({ ...form, grade: Number(event.target.value) })}>{[1,2,3,4,5,6].map(grade => <option key={grade} value={grade}>{grade}학년</option>)}</select></label>
         <label><span>교과</span><select value={form.subject} onChange={event => setForm({ ...form, subject: event.target.value })}>{subjects.map(subject => <option key={subject}>{subject}</option>)}</select></label>
         <label className="full"><span>학습 목표 · 자동 분석 후 교사 확인</span><input value={form.learningGoal} onChange={event => setForm({ ...form, learningGoal: event.target.value })} placeholder="학생이 수업 후 무엇을 할 수 있어야 하나요?" /></label>

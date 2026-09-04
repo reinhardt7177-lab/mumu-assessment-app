@@ -158,6 +158,24 @@
 .design-question-stack .question-prompt { min-height: 98px; resize: vertical; font-size: 13px; font-weight: 750; }
 .design-question-meta { margin: 11px 0; display: grid; grid-template-columns: 1fr 1fr 100px; gap: 9px; }
 .design-question-stack label > textarea { min-height: 70px; resize: vertical; }
+.design-question-title { display: flex; align-items: center; gap: 9px; }
+.design-question-title strong { padding: 5px 8px; border-radius: 999px; color: #31596a; background: #eaf3f4; font-size: 12px; }
+.design-question-type { margin-bottom: 13px; padding: 13px; border: 1px solid #dce9e7; border-radius: 13px; background: #f2f8f7; display: grid; grid-template-columns: minmax(190px, 260px) 1fr; align-items: end; gap: 12px; }
+.design-question-type p { padding-bottom: 11px; color: #5b7078; font-size: 14px; line-height: 1.5; }
+.design-choice-editor { margin: 13px 0; padding: 14px; border: 1px solid #cddfdd; border-radius: 14px; background: #fff; display: grid; gap: 9px; }
+.design-choice-editor legend { padding: 0 5px; color: #244f5c; font-size: 14px; font-weight: 850; }
+.design-choice-editor > p { color: #6c7d82; font-size: 13px; line-height: 1.5; }
+.design-choice-editor > div { display: grid; grid-template-columns: 20px 28px 1fr auto; align-items: center; gap: 8px; }
+.design-choice-editor > div > input[type="radio"] { width: 18px; min-height: 18px; accent-color: #168f86; }
+.design-choice-editor > div > span { width: 25px; height: 25px; border-radius: 8px; background: #e9f3f1; display: grid; place-items: center; font-size: 12px; font-weight: 850; }
+.design-choice-editor > div > button, .design-add-choice, .design-add-question { min-height: 38px; padding: 0 12px; border: 1px solid #b9d7d3; border-radius: 9px; color: #126e68; background: #f7fbfa; font-size: 13px; font-weight: 800; cursor: pointer; }
+.design-choice-editor > div > button { border-color: #efd2cd; color: #975247; background: #fff8f7; }
+.design-add-choice { justify-self: start; }
+.design-add-question { min-height: 46px; border-style: dashed; font-size: 14px; }
+.design-answer-key { margin: 13px 0; padding: 14px; border: 1px solid #d6e1ef; border-radius: 14px; background: #f7f9fd; }
+.design-answer-key textarea { background: #fff; }
+.design-answer-key small { color: #65737e; font-size: 13px; font-weight: 500; }
+.design-open-response-note { margin: 13px 0; padding: 11px 13px; border-radius: 11px; color: #45616a; background: #eff5f5; font-size: 14px; line-height: 1.55; }
 .design-validity-pending { display: grid; gap: 16px; }
 .design-validity-pending .design-empty-stage { min-height: 330px; }
 .design-audit-methods { margin-bottom: 16px; padding: 15px 16px; border: 1px solid #d6e5e2; border-radius: 14px; background: #f5faf9; display: grid; gap: 11px; }
@@ -245,7 +263,10 @@
   .design-standard-list em { display: none; }
   .design-criterion-list article { grid-template-columns: 1fr; }
   .design-criterion-list article > b { display: none; }
-  .design-criterion-list article > div, .design-question-meta { grid-template-columns: 1fr; }
+  .design-criterion-list article > div, .design-question-meta, .design-question-type { grid-template-columns: 1fr; }
+  .design-question-type p { padding-bottom: 0; }
+  .design-choice-editor > div { grid-template-columns: 20px 28px 1fr; }
+  .design-choice-editor > div > button { grid-column: 3; justify-self: start; }
   .design-criterion-list select { grid-column: auto; }
   .design-editor-actions { align-items: stretch; }
   .design-editor-actions > button { min-width: 76px; }

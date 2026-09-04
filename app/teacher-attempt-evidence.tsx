@@ -81,7 +81,7 @@ function MediaEvidence({ attemptId, response, onChange }: { attemptId: string; r
         <img src={`/api/teacher/evidence-assets/${asset.id}`} alt="학생 손글씨 답안 원본" />
       </> : null}
       {asset && response.modality === "speech" ? <audio controls src={`/api/teacher/evidence-assets/${asset.id}`}><track kind="captions" src={captionTrack(latest?.extractedText)} srcLang="ko" label="한국어 전사" default />음성 원본을 재생할 수 없습니다.</audio> : null}
-      {asset && response.modality === "screen" ? <video controls src={`/api/teacher/evidence-assets/${asset.id}`}>화면 녹화를 재생할 수 없습니다.</video> : null}
+      {asset && response.modality === "screen" ? <video controls src={`/api/teacher/evidence-assets/${asset.id}`}><track kind="captions" src={captionTrack("화면 녹화에는 음성이 없습니다.")} srcLang="ko" label="음성 없음" default />화면 녹화를 재생할 수 없습니다.</video> : null}
     </div>
     {response.modality === "screen" ? <p className="teacher-screen-review-note">화면 녹화는 학생의 디지털 수행 과정을 교사가 직접 관찰하는 증거입니다. 영상만으로 AI가 성취 수준을 자동 확정하지 않습니다.</p> : <>
       <label>OCR·전사 확인본<textarea value={text} maxLength={50000} disabled={busy} onChange={event => setText(event.target.value)} /></label>

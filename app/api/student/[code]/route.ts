@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { getRepository } from "../../../../db/connection";
 import { apiError, privateJson, validateCode } from "../../../../lib/http";
+import { publicAssessmentDefinition } from "../../../../lib/assessment-domain";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ code: string }> }) {
   try {
@@ -14,7 +15,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ cod
       id: assessment.id,
       shareCode: code,
       status: assessment.status,
-      definition: assessment.definition,
+      definition: publicAssessmentDefinition(assessment.definition),
       rosterRequired: Boolean(assessment.curriculumLink || assessment.distribution),
       distribution: assessment.distribution,
     }, attempt, result });

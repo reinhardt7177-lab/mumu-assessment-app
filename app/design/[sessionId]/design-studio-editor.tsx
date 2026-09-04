@@ -168,7 +168,7 @@ function RubricStep({ rubric, locked, onChange }: { rubric: RubricDraftItem[]; l
 }
 
 const responseMethodOptions: Array<{ id: AssessmentMethod; icon: string; title: string; description: string; badge: string }> = [
-  { id: "text", icon: "✎", title: "온라인 답안", description: "화면에서 서술형·선택형에 직접 응답", badge: "기본" },
+  { id: "text", icon: "✎", title: "온라인 답안", description: "객관식·단답형·서술형에 화면에서 직접 응답", badge: "기본" },
   { id: "photo", icon: "▣", title: "종이 시험지·OCR", description: "손글씨 답안 사진을 글자로 변환해 확인", badge: "OCR" },
   { id: "speech", icon: "●", title: "오럴 테스트", description: "학생 음성을 녹음하고 전사해 평가", badge: "전사" },
   { id: "chat", icon: "⌁", title: "평가 챗봇", description: "대화 기록·학습시간·도움 수준을 함께 분석", badge: "대화" },
@@ -196,10 +196,49 @@ function ResponseMethodsStep({ methods, locked, onChange }: { methods: Assessmen
   </section>;
 }
 
+const questionKindOptions: Array<{ value: QuestionDraft["kind"]; label: string; description: string }> = [
+  { value: "선택형", label: "객관식(선택형)", description: "보기 중 하나 선택 · 정답 1개" },
+  { value: "단답형", label: "단답형", description: "짧은 낱말·문장 · 인정 답안 설정" },
+  { value: "서술형", label: "서술형", description: "생각·근거·과정을 글로 표현" },
+  { value: "말하기", label: "말하기", description: "음성으로 설명 · 오럴 테스트 필요" },
+];
+
 function QuestionsStep({ questions, rubric, standards, locked, onChange }: { questions: QuestionDraft[]; rubric: RubricDraftItem[]; standards: AlignmentCandidate[]; locked: boolean; onChange: (value: QuestionDraft[]) => void }) {
-  if (!questions.length) return <div className="design-empty-stage"><span>05</span><h2>평가 문항을 생성할 차례입니다.</h2><p>각 문항은 하나의 성취기준과 루브릭 기준에 연결되고, 학생이 보여야 할 증거까지 함께 저장됩니다.</p></div>;
+  if (!questions.length) { const standardCode = standards[0]?.code ?? rubric[0]?.standardCode ?? ""; const criterion = rubric.find(item => item.standardCode === standardCode) ?? rubric[0]; return <div className="design-empty-stage"><span>05</span><h2>평가 문항을 생성할 차례입니다.</h2><p>AI 초안을 만들거나 문항을 직접 추가한 뒤 객관식·단답형·서술형·말하기 중 알맞은 유형을 고르세요.</p>{!locked && <button type="button" className="design-add-question" onClick={() => onChange([{ id: crypto.randomUUID(), prompt: "학생에게 제시할 문항을 입력하세요.", kind: "서술형", standardCode, criterion: criterion?.name ?? "평가 기준", points: 10, evidenceExpected: criterion?.description ?? "학생의 답안에서 관찰할 증거를 입력하세요.", choices: [], answerKey: [] }])}>＋ 문항 직접 추가</button>}</div>; }
   const update = (index: number, patch: Partial<QuestionDraft>) => onChange(questions.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
-  return <div className="design-question-stack">{questions.map((item, index) => <article key={item.id}><header><span>문항 {index + 1}</span><button type="button" disabled={locked || questions.length === 1} onClick={() => onChange(questions.filter((_, i) => i !== index))}>삭제</button></header><textarea className="question-prompt" disabled={locked} value={item.prompt} onChange={event => update(index, { prompt: event.target.value })} /><div className="design-question-meta"><label><span>성취기준</span><select disabled={locked} value={item.standardCode} onChange={event => { const nextCode = event.target.value; const nextCriterion = rubric.find(r => r.standardCode === nextCode)?.name ?? item.criterion; update(index, { standardCode: nextCode, criterion: nextCriterion }); }}>{standards.map(standard => <option key={standard.code}>{standard.code}</option>)}</select></label><label><span>루브릭 기준</span><select disabled={locked} value={item.criterion} onChange={event => update(index, { criterion: event.target.value })}>{rubric.filter(r => r.standardCode === item.standardCode).map(r => <option key={r.id}>{r.name}</option>)}</select></label><label><span>배점</span><input disabled={locked} type="number" min="1" max="100" value={item.points} onChange={event => update(index, { points: Number(event.target.value) })} /></label></div><label><span>기대 증거</span><textarea disabled={locked} value={item.evidenceExpected} onChange={event => update(index, { evidenceExpected: event.target.value })} /></label></article>)}</div>;
+  const changeKind = (index: number, kind: QuestionDraft["kind"]) => {
+    const item = questions[index];
+    if (kind === "선택형") {
+      const choices = (item.choices ?? []).length >= 2 ? item.choices! : ["보기 1", "보기 2", "보기 3", "보기 4"];
+      const answerKey = item.answerKey?.[0] && choices.includes(item.answerKey[0]) ? [item.answerKey[0]] : [choices[0]];
+      update(index, { kind, choices, answerKey });
+      return;
+    }
+    update(index, { kind, choices: [], answerKey: kind === "단답형" ? (item.kind === "단답형" ? item.answerKey ?? [] : []) : [] });
+  };
+  const addQuestion = () => {
+    const standardCode = standards[0]?.code ?? rubric[0]?.standardCode ?? "";
+    const criterion = rubric.find(item => item.standardCode === standardCode) ?? rubric[0];
+    onChange([...questions, {
+      id: crypto.randomUUID(), prompt: "학생에게 제시할 문항을 입력하세요.", kind: "서술형",
+      standardCode, criterion: criterion?.name ?? "평가 기준", points: 10,
+      evidenceExpected: criterion?.description ?? "학생의 답안에서 관찰할 증거를 입력하세요.",
+      choices: [], answerKey: [],
+    }]);
+  };
+  return <div className="design-question-stack">{questions.map((item, index) => {
+    const choices = item.choices ?? [];
+    return <article key={item.id}>
+      <header><div className="design-question-title"><span>문항 {index + 1}</span><strong>{questionKindOptions.find(option => option.value === item.kind)?.label ?? item.kind}</strong></div><button type="button" disabled={locked || questions.length === 1} onClick={() => onChange(questions.filter((_, i) => i !== index))}>삭제</button></header>
+      <div className="design-question-type"><label><span>문항 유형</span><select disabled={locked} value={item.kind} onChange={event => changeKind(index, event.target.value as QuestionDraft["kind"])}>{questionKindOptions.map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><p>{questionKindOptions.find(option => option.value === item.kind)?.description}</p></div>
+      <label><span>학생에게 보여 줄 문항</span><textarea className="question-prompt" disabled={locked} value={item.prompt} onChange={event => update(index, { prompt: event.target.value })} /></label>
+      {item.kind === "선택형" && <fieldset className="design-choice-editor"><legend>보기와 정답</legend><p>왼쪽 원을 눌러 정답을 지정하세요. 정답 정보는 학생 시험지에 전송되지 않습니다.</p>{choices.map((choice, choiceIndex) => <div key={choiceIndex}><input type="radio" name={`correct-${item.id}`} aria-label={`${choiceIndex + 1}번 보기를 정답으로 지정`} checked={item.answerKey?.[0] === choice} disabled={locked} onChange={() => update(index, { answerKey: [choice] })} /><span>{choiceIndex + 1}</span><input value={choice} maxLength={300} disabled={locked} aria-label={`${choiceIndex + 1}번 보기`} onChange={event => { const nextChoices = choices.map((value, i) => i === choiceIndex ? event.target.value : value); update(index, { choices: nextChoices, answerKey: item.answerKey?.[0] === choice ? [event.target.value] : item.answerKey }); }} /><button type="button" disabled={locked || choices.length <= 2} aria-label={`${choiceIndex + 1}번 보기 삭제`} onClick={() => { const nextChoices = choices.filter((_, i) => i !== choiceIndex); update(index, { choices: nextChoices, answerKey: item.answerKey?.[0] === choice ? [] : item.answerKey }); }}>삭제</button></div>)}<button type="button" className="design-add-choice" disabled={locked || choices.length >= 8} onClick={() => update(index, { choices: [...choices, `보기 ${choices.length + 1}`] })}>＋ 보기 추가</button></fieldset>}
+      {item.kind === "단답형" && <label className="design-answer-key"><span>인정할 정답 · 한 줄에 하나</span><textarea disabled={locked} value={joined(item.answerKey ?? [])} onChange={event => update(index, { answerKey: lines(event.target.value), choices: [] })} placeholder={"예: 민주주의\n민주 주의"} /><small>띄어쓰기·표기 차이 등 실제로 정답 처리할 표현만 입력하세요.</small></label>}
+      {(item.kind === "서술형" || item.kind === "말하기") && <p className="design-open-response-note">{item.kind === "말하기" ? "오럴 테스트 응답 방식을 함께 선택해야 실제 음성을 수합할 수 있습니다." : "정답 하나로 자동 채점하지 않고 아래 기대 증거와 루브릭으로 판단합니다."}</p>}
+      <div className="design-question-meta"><label><span>성취기준</span><select disabled={locked} value={item.standardCode} onChange={event => { const nextCode = event.target.value; const nextCriterion = rubric.find(r => r.standardCode === nextCode)?.name ?? item.criterion; update(index, { standardCode: nextCode, criterion: nextCriterion }); }}>{standards.map(standard => <option key={standard.code}>{standard.code}</option>)}</select></label><label><span>루브릭 기준</span><select disabled={locked} value={item.criterion} onChange={event => update(index, { criterion: event.target.value })}>{rubric.filter(r => r.standardCode === item.standardCode).map(r => <option key={r.id}>{r.name}</option>)}</select></label><label><span>배점</span><input disabled={locked} type="number" min="1" max="100" value={item.points} onChange={event => update(index, { points: Number(event.target.value) })} /></label></div>
+      <label><span>기대 증거·채점 관점</span><textarea disabled={locked} value={item.evidenceExpected} onChange={event => update(index, { evidenceExpected: event.target.value })} /></label>
+    </article>;
+  })}{!locked && <button type="button" className="design-add-question" disabled={questions.length >= 20} onClick={addQuestion}>＋ 문항 직접 추가</button>}</div>;
 }
 
 function ValidityStep({ validity, methods, onEdit }: { validity: DesignSessionRecord["validity"]; methods: AssessmentMethod[]; onEdit: () => void }) {
