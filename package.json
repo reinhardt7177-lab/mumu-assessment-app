@@ -11,7 +11,7 @@
     "build": "vinext build",
     "build:vercel": "next build",
     "start": "vinext start",
-    "test": "tsx --test tests/assessment-persistence.test.ts tests/classroom-persistence.test.ts tests/growth-persistence.test.ts tests/http.test.ts",
+    "test": "tsx --test tests/assessment-persistence.test.ts tests/classroom-persistence.test.ts tests/design-studio-persistence.test.ts tests/growth-persistence.test.ts tests/http.test.ts",
     "test:sites": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",

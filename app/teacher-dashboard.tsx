@@ -19,7 +19,7 @@ export default function TeacherDashboard({
     <section className="teacher-welcome">
       <div><p className="kicker">이준용 선생님의 평가 운영실</p><h1>학급의 오늘과<br />학생의 성장을 한눈에.</h1><p>평가 문항을 만들고 학급에 배포하면, 답안·루브릭 판단·피드백이 학기말 성장 기록까지 이어집니다.</p></div>
       <div className="teacher-quick-actions">
-        <Link className="primary-button button-link" href="/assessments">＋ 평가 문항 만들기</Link>
+        <Link className="primary-button button-link" href="/design">＋ AI 평가 설계하기</Link>
         <Link className="outline-button button-link" href="/classes">학급·명렬 관리</Link>
       </div>
     </section>

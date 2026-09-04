@@ -38,10 +38,10 @@ const safeProviderMetadata = (value: unknown) => {
 
 const classifyGenerationError = (error: unknown) => {
   const errorMessage = error instanceof Error ? error.message : "Unknown error";
-  if (errorMessage.includes("Free tier users")) return { status: 403, code: "credits_required", message: "Luna 모델을 사용하려면 Vercel AI Gateway 유료 크레딧 연결이 필요합니다." };
+  if (errorMessage.includes("Free tier users")) return { status: 403, code: "credits_required", message: "AI 문항 생성을 사용하려면 Vercel AI Gateway 크레딧 연결이 필요합니다." };
   if (APICallError.isInstance(error)) {
     if (error.statusCode === 402) return { status: 402, code: "budget_exceeded", message: "AI 사용 예산을 확인해 주세요." };
-    if (error.statusCode === 403) return { status: 403, code: "credits_required", message: "Luna 모델을 사용하려면 Vercel AI Gateway 유료 크레딧 연결이 필요합니다." };
+    if (error.statusCode === 403) return { status: 403, code: "credits_required", message: "AI 문항 생성을 사용하려면 Vercel AI Gateway 크레딧 연결이 필요합니다." };
     if (error.statusCode === 429) return { status: 429, code: "rate_limited", message: "요청이 많습니다. 잠시 뒤 다시 시도해 주세요." };
     if (error.statusCode === 503) return { status: 503, code: "provider_unavailable", message: "AI 서비스가 잠시 불안정합니다. 다시 시도해 주세요." };
     return { status: 502, code: `provider_${error.statusCode ?? "error"}`, message: "AI 문항 결과를 확인하지 못했습니다. 다시 시도해 주세요." };
@@ -69,7 +69,7 @@ export async function POST(request: Request) {
   const standardsText = verifiedStandards
     .map((standard) => `- [${standard.code}] ${standard.domain}: ${standard.content}`)
     .join("\n");
-  const model = process.env.AI_MODEL ?? "openai/gpt-5.6-luna";
+  const model = process.env.AI_MODEL ?? "openai/gpt-5.4-mini";
   const generationInput = { title, subject, learningGoal, standards: verifiedStandards, count };
   const inputHash = createHash("sha256").update(JSON.stringify({ promptVersion, model, ...generationInput })).digest("hex");
   const repository = getRepository();

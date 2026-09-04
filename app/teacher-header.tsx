@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 
-type Area = "home" | "classes" | "assessments" | "curriculum";
+type Area = "home" | "design" | "classes" | "assessments" | "curriculum";
 
 export default function TeacherHeader({ active }: { active: Area }) {
   const items: Array<{ key: Area; href: string; label: string }> = [
     { key: "home", href: "/", label: "오늘" },
+    { key: "design", href: "/design", label: "평가 설계" },
     { key: "classes", href: "/classes", label: "학급" },
     { key: "assessments", href: "/assessments", label: "평가 문항" },
     { key: "curriculum", href: "/curriculum", label: "교육과정" },
