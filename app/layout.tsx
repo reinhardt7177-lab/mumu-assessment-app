@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
+import "./teacher-workspace.css";
 
 export const metadata: Metadata = {
   title: "Mumu 평가 | 증거 중심 학생 평가",
