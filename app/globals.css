@@ -1149,15 +1149,19 @@ h3 { font-size: 15px; }
 .report-timeline div { display: grid; align-content: start; gap: 3px; }
 .report-timeline strong { color: #274c59; font-size: 10px; }
 .report-timeline span, .report-timeline p { color: #73868b; font-size: 8px; }
-.swot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.swot-grid > article { padding: 15px; border-radius: 13px; background: #eef8f5; }
-.swot-grid > article:nth-child(2) { background: #fff7e7; }
-.swot-grid > article:nth-child(3) { background: #f2effa; }
-.swot-grid > article:nth-child(4) { background: #f8f1f1; }
-.swot-grid header { display: flex; justify-content: space-between; gap: 8px; }
-.swot-grid strong { color: #204a56; font-size: 11px; }
-.swot-grid small { color: #73848a; font-size: 7px; }
-.swot-grid ul { margin-top: 10px; padding-left: 16px; display: grid; gap: 6px; color: #4a646d; font-size: 9px; line-height: 1.5; }
+.growth-view-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.growth-view-grid > article { padding: 15px; border-radius: 13px; background: #eef8f5; }
+.growth-view-grid > article:nth-child(2) { background: #fff7e7; }
+.growth-view-grid > article:nth-child(3) { background: #f2effa; }
+.growth-view-grid > article:nth-child(4) { background: #f8f1f1; }
+.growth-view-grid header { display: flex; justify-content: space-between; gap: 8px; }
+.growth-view-grid strong { color: #204a56; font-size: 11px; }
+.growth-view-grid small { color: #73848a; font-size: 7px; }
+.growth-view-grid ul { margin-top: 10px; padding-left: 16px; display: grid; gap: 6px; color: #4a646d; font-size: 9px; line-height: 1.5; }
+.reflection-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.reflection-grid article { min-height: 118px; padding: 15px; border: 1px dashed #a9c8c3; border-radius: 13px; background: #fbfdfc; display: grid; align-content: start; gap: 8px; }
+.reflection-grid strong { color: #214b57; font-size: 10px; }
+.reflection-grid p { color: #71858a; font-size: 8px; line-height: 1.55; }
 .next-learning-report > div { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .next-learning-report article { padding: 13px; border: 1px solid #dce6e5; border-radius: 11px; display: grid; gap: 5px; }
 .next-learning-report article span { color: #168078; font-size: 8px; font-weight: 850; }
@@ -1177,7 +1181,7 @@ h3 { font-size: 15px; }
   .report-title { grid-template-columns: 1fr; }
   .report-title > strong { width: 68px; height: 68px; font-size: 22px; }
   .report-summary-grid { grid-template-columns: 1fr 1fr; }
-  .achievement-report-list article, .swot-grid, .next-learning-report > div { grid-template-columns: 1fr; }
+  .achievement-report-list article, .growth-view-grid, .reflection-grid, .next-learning-report > div { grid-template-columns: 1fr; }
 }
 
 @media print {
@@ -1186,5 +1190,5 @@ h3 { font-size: 15px; }
   .semester-report-page { padding: 0; background: white; }
   .report-toolbar { display: none; }
   .semester-report-sheet { width: 100%; padding: 0; border: 0; border-radius: 0; box-shadow: none; }
-  .report-section, .swot-grid > article, .achievement-report-list article { break-inside: avoid; }
+  .report-section, .growth-view-grid > article, .reflection-grid > article, .achievement-report-list article { break-inside: avoid; }
 }
