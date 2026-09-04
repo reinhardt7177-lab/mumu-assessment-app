@@ -1,0 +1,203 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { AssessmentQuestion } from "../lib/assessment-domain";
+import { requestFormData, requestJson } from "../lib/client-api";
+import type { ResponseEvidenceRecord, StudentEvidencePayload } from "../lib/evidence-domain";
+
+type Method = "text" | "photo" | "speech" | "chat";
+type Props = {
+  code: string;
+  question: AssessmentQuestion;
+  methods: Method[];
+  disabled: boolean;
+  textValue: string;
+  elapsedSeconds: number;
+  evidence: ResponseEvidenceRecord[];
+  policy: StudentEvidencePayload["policy"];
+  onTextChange: (value: string) => void;
+  onEvidenceChange: (value: ResponseEvidenceRecord[]) => void;
+  onNotice: (message: string) => void;
+  onError: (message: string) => void;
+};
+
+const labels: Record<Method, { icon: string; title: string; description: string }> = {
+  text: { icon: "✎", title: "글로 답하기", description: "키보드로 생각과 근거 쓰기" },
+  photo: { icon: "▣", title: "손글씨 사진", description: "답안 영역 촬영 후 OCR 확인" },
+  speech: { icon: "●", title: "말로 답하기", description: "녹음 후 전사 내용 확인" },
+  chat: { icon: "⌁", title: "대화로 답하기", description: "질문을 받으며 생각 설명하기" },
+};
+
+function latestForQuestion(evidence: ResponseEvidenceRecord[], questionId: string, modality: Exclude<Method, "text">) {
+  return evidence.filter(item => item.questionId === questionId && item.modality === modality).at(-1) ?? null;
+}
+
+function captionTrack(text?: string | null) {
+  const caption = text?.trim().replace(/\r?\n/g, " ") || "아직 전사되지 않은 녹음입니다.";
+  return `data:text/vtt;charset=utf-8,${encodeURIComponent(`WEBVTT\n\n00:00.000 --> 59:59.000\n${caption}`)}`;
+}
+
+export function responseIsComplete(response: ResponseEvidenceRecord | null) {
+  if (!response) return false;
+  if (response.modality === "chat") return Boolean(response.chat?.messages.some(message => message.role === "student"));
+  return response.derivations.some(item => item.status === "complete" && Boolean(item.extractedText?.trim()));
+}
+
+export default function StudentEvidenceResponse(props: Props) {
+  const { code, question, methods, disabled, textValue, elapsedSeconds, evidence, policy } = props;
+  const [method, setMethod] = useState<Method>(methods.includes("text") ? "text" : methods[0]);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [identifiersRemoved, setIdentifiersRemoved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [chatMessage, setChatMessage] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [recordedUrl, setRecordedUrl] = useState("");
+  const [recordedSeconds, setRecordedSeconds] = useState(0);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recordStartedAt = useRef(0);
+
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach(track => track.stop());
+    if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+  }, [recordedUrl]);
+
+  const photo = latestForQuestion(evidence, question.id, "photo");
+  const speech = latestForQuestion(evidence, question.id, "speech");
+  const chat = latestForQuestion(evidence, question.id, "chat");
+  const selectedResponse = method === "photo" ? photo : method === "speech" ? speech : method === "chat" ? chat : null;
+  const latestDerivation = selectedResponse?.derivations.find(item => item.status === "complete") ?? selectedResponse?.derivations[0];
+  const aiReady = policy.enabled && policy.aiConfigured;
+  const mediaReady = aiReady && policy.storageConfigured;
+  const tabs = useMemo(() => methods.filter(item => labels[item]), [methods]);
+
+  const uploadAndProcess = async (modality: "photo" | "speech") => {
+    if (!selectedFile || !identifiersRemoved) return;
+    setBusy(true); props.onError("");
+    try {
+      const form = new FormData();
+      form.set("questionId", question.id);
+      form.set("modality", modality);
+      form.set("file", selectedFile);
+      form.set("identifiersRemoved", "true");
+      if (modality === "speech" && recordedSeconds > 0) form.set("durationSeconds", String(recordedSeconds));
+      const uploaded = await requestFormData<{ responses: ResponseEvidenceRecord[] }>(`/api/student/${code}/evidence`, form);
+      props.onEvidenceChange(uploaded.responses);
+      const response = latestForQuestion(uploaded.responses, question.id, modality);
+      if (!response) throw new Error("업로드한 답안을 찾을 수 없습니다.");
+      props.onNotice(modality === "photo" ? "사진을 안전하게 저장했어요. 글자를 읽는 중…" : "녹음을 안전하게 저장했어요. 말한 내용을 옮기는 중…");
+      const processed = await requestJson<{ responses: ResponseEvidenceRecord[] }>(`/api/student/${code}/evidence/${response.id}/process`, {
+        method: "POST", body: "{}", signal: AbortSignal.timeout(60_000),
+      });
+      props.onEvidenceChange(processed.responses);
+      props.onNotice(modality === "photo" ? "손글씨 변환이 끝났어요. 읽힌 내용을 확인해 주세요." : "음성 전사가 끝났어요. 옮겨진 내용을 확인해 주세요.");
+      setSelectedFile(null); setIdentifiersRemoved(false);
+    } catch (reason) {
+      props.onError(reason instanceof Error ? reason.message : "응답을 처리하지 못했어요.");
+    } finally { setBusy(false); }
+  };
+
+  const startRecording = async () => {
+    props.onError("");
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") throw new Error("이 기기에서는 브라우저 녹음을 지원하지 않아요. 녹음 파일을 선택해 주세요.");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const preferred = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+      const recorder = new MediaRecorder(stream, preferred ? { mimeType: preferred } : undefined);
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+      recorder.onstop = () => {
+        const mimeType = (recorder.mimeType || "audio/webm").split(";", 1)[0];
+        const blob = new Blob(chunks, { type: mimeType });
+        if (recordedUrl) URL.revokeObjectURL(recordedUrl);
+        const url = URL.createObjectURL(blob);
+        setRecordedUrl(url);
+        setRecordedSeconds(Math.max(1, Math.min(180, Math.round((Date.now() - recordStartedAt.current) / 1000))));
+        setSelectedFile(new File([blob], `oral-answer.${mimeType === "audio/mp4" ? "m4a" : "webm"}`, { type: mimeType }));
+        stream.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      };
+      recorderRef.current = recorder;
+      recordStartedAt.current = Date.now();
+      recorder.start(500);
+      setRecording(true);
+    } catch (reason) { props.onError(reason instanceof Error ? reason.message : "마이크를 시작하지 못했어요."); }
+  };
+
+  const stopRecording = () => {
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+    setRecording(false);
+  };
+
+  const sendChat = async () => {
+    if (!chatMessage.trim()) return;
+    setBusy(true); props.onError("");
+    try {
+      const data = await requestJson<{ responses: ResponseEvidenceRecord[] }>(`/api/student/${code}/evidence/chat`, {
+        method: "POST",
+        body: JSON.stringify({ questionId: question.id, sessionId: chat?.chat?.id, message: chatMessage, elapsedSeconds }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      props.onEvidenceChange(data.responses);
+      setChatMessage("");
+      props.onNotice("대화와 도움 수준이 평가 기록에 저장됐어요.");
+    } catch (reason) { props.onError(reason instanceof Error ? reason.message : "대화를 이어가지 못했어요."); }
+    finally { setBusy(false); }
+  };
+
+  return <div className="student-response-methods">
+    <div className="student-method-tabs" role="tablist" aria-label="응답 방법">
+      {tabs.map(item => <button key={item} type="button" role="tab" aria-selected={method === item} disabled={disabled || busy} onClick={() => setMethod(item)}>
+        <span>{labels[item].icon}</span><strong>{labels[item].title}</strong><small>{labels[item].description}</small>
+      </button>)}
+    </div>
+
+    {method === "text" && <div className="student-method-panel" role="tabpanel">
+      <label className="sr-only" htmlFor={`answer-${question.id}`}>글 답안</label>
+      <textarea id={`answer-${question.id}`} value={textValue} maxLength={10000} disabled={disabled || busy} onChange={event => props.onTextChange(event.target.value)} placeholder="나의 생각과 근거를 써주세요." />
+      <small>{textValue.length} / 10,000자</small>
+    </div>}
+
+    {(method === "photo" || method === "speech") && <div className="student-method-panel media-answer-panel" role="tabpanel">
+      {!mediaReady && <p className="evidence-readiness-warning">선생님이 학교 승인 설정과 비공개 저장소를 준비하면 사용할 수 있어요. 지금은 글 답안을 이용해 주세요.</p>}
+      {method === "photo" ? <>
+        <label className="evidence-file-picker">답안 영역 사진 선택<input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={disabled || busy || !mediaReady} onChange={event => setSelectedFile(event.target.files?.[0] ?? null)} /></label>
+        {photo?.assets[0] && <>
+          {/* Private assets require the student's authenticated cookie, so the browser must load the source directly. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="student-evidence-preview" src={`/api/student/${code}/evidence/assets/${photo.assets[0].id}`} alt="내가 올린 손글씨 답안" />
+        </>}
+      </> : <>
+        <div className="recording-controls">
+          {!recording ? <button type="button" className="outline-button" disabled={disabled || busy || !mediaReady} onClick={startRecording}>● 녹음 시작</button> : <button type="button" className="primary-button recording" onClick={stopRecording}>■ 녹음 끝내기</button>}
+          <label className="evidence-file-picker compact">또는 녹음 파일 선택<input type="file" accept="audio/webm,audio/mp4,audio/mpeg,audio/wav" disabled={disabled || busy || !mediaReady} onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setRecordedSeconds(0); }} /></label>
+        </div>
+        {recordedUrl && <audio className="student-audio-preview" controls src={recordedUrl}><track kind="captions" src={captionTrack()} srcLang="ko" label="한국어 전사" default />녹음을 재생할 수 없습니다.</audio>}
+        {speech?.assets[0] && !recordedUrl && <audio className="student-audio-preview" controls src={`/api/student/${code}/evidence/assets/${speech.assets[0].id}`}><track kind="captions" src={captionTrack(latestDerivation?.extractedText)} srcLang="ko" label="한국어 전사" default />녹음을 재생할 수 없습니다.</audio>}
+      </>}
+      <label className="identifier-confirmation"><input type="checkbox" checked={identifiersRemoved} disabled={disabled || busy || !selectedFile} onChange={event => setIdentifiersRemoved(event.target.checked)} />
+        <span>{method === "photo" ? "사진에 이름·번호가 보이지 않고 답안 영역만 담겼어요." : "녹음에서 이름·번호를 말하지 않았어요."}</span>
+      </label>
+      {selectedFile && <p className="selected-evidence-file">선택됨 · {selectedFile.name} · {(selectedFile.size / 1024 / 1024).toFixed(1)}MB</p>}
+      <button type="button" className="primary-button" disabled={disabled || busy || !mediaReady || !selectedFile || !identifiersRemoved} onClick={() => void uploadAndProcess(method)}>{busy ? "안전하게 처리하는 중…" : method === "photo" ? "사진 저장하고 글자 읽기" : "녹음 저장하고 전사하기"}</button>
+      {latestDerivation && <div className={`evidence-derivation ${latestDerivation.status}`}>
+        <strong>{latestDerivation.status === "complete" ? "변환된 답안" : latestDerivation.status === "pending" ? "변환 중" : "변환 실패"}</strong>
+        {latestDerivation.extractedText && <p>{latestDerivation.extractedText}</p>}
+        {latestDerivation.confidence != null && <small>변환 신뢰도 참고값 {Math.round(latestDerivation.confidence * 100)}% · 성취 수준에는 직접 반영하지 않아요.</small>}
+        {latestDerivation.errorMessage && <small>{latestDerivation.errorMessage}</small>}
+      </div>}
+    </div>}
+
+    {method === "chat" && <div className="student-method-panel chat-answer-panel" role="tabpanel">
+      {!aiReady && <p className="evidence-readiness-warning">선생님이 학교 승인 설정과 AI 제공자를 준비하면 사용할 수 있어요. 지금은 글 답안을 이용해 주세요.</p>}
+      <p className="chat-boundary">챗봇은 정답을 알려주지 않고, 내 생각을 더 자세히 말하도록 질문해요. 받은 도움도 함께 기록됩니다.</p>
+      <div className="assessment-chat-log" aria-live="polite">
+        {chat?.chat?.messages.length ? chat.chat.messages.map(message => <div key={message.id} className={message.role}><strong>{message.role === "student" ? "나" : "생각 도우미"}</strong><p>{message.content}</p>{message.role === "assistant" && message.helpType !== "none" ? <small>도움 기록 · {message.helpType === "prompt" ? "질문 촉진" : message.helpType === "step_hint" ? "단계 힌트" : "다른 맥락 예시"}</small> : null}</div>) : <p className="chat-empty">문항에 대한 내 생각을 먼저 말해 보세요.</p>}
+      </div>
+      <div className="chat-composer"><textarea value={chatMessage} maxLength={2000} disabled={disabled || busy || !aiReady} onChange={event => setChatMessage(event.target.value)} placeholder="내 생각과 이유를 적어보세요." /><button type="button" className="primary-button" disabled={disabled || busy || !aiReady || !chatMessage.trim()} onClick={() => void sendChat()}>{busy ? "생각을 살펴보는 중…" : "대화 이어가기"}</button></div>
+      {chat?.chat && <small className="chat-metrics">대화 {Math.floor(chat.chat.elapsedSeconds / 60)}분 {chat.chat.elapsedSeconds % 60}초 · 도움 {chat.chat.helpCount}회</small>}
+    </div>}
+  </div>;
+}

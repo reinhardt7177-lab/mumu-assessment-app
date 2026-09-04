@@ -116,7 +116,7 @@ export type EvidenceRecord = {
   studentId: string;
   eventId: string;
   attemptId: string | null;
-  modality: "text" | "photo" | "speech" | "observation" | "chat";
+  modality: "text" | "photo" | "speech" | "observation" | "chat" | "multimodal";
   sourceKind: string;
   assistanceLevel: "independent" | "teacher_prompt" | "step_hint" | "example" | "scaffolded";
   originalText: string | null;
@@ -208,6 +208,7 @@ export type AiSuggestionContext = {
   evidenceId: string;
   rubricCriterionId: string;
   studentId: string;
+  studentIdentifiers: Array<string | null>;
   grade: number;
   subject: string;
   unitId: string;
@@ -814,16 +815,43 @@ export function createGrowthRepository(query: Query) {
 
     async getAiSuggestionContext(evidenceId: string, rubricCriterionId: string, ownerId: string) {
       const rows = await query(`SELECT e.id AS "evidenceId", c.id AS "rubricCriterionId",
-        s.id AS "studentId", t.grade, t.subject, u.id AS "unitId", u.title AS "unitTitle",
+        s.id AS "studentId", jsonb_build_array(s.student_ref, s.display_name, roster.student_ref, roster.display_name) AS "studentIdentifiers",
+        t.grade, t.subject, u.id AS "unitId", u.title AS "unitTitle",
         us.standard_code AS "standardCode", us.standard_content AS "standardContent",
         event.title AS "eventTitle", event.context AS "eventContext", event.event_type AS "eventType",
         e.modality, e.assistance_level AS "assistanceLevel",
-        coalesce(e.original_text, e.transformed_text, '') AS "evidenceText",
+        coalesce((
+          SELECT string_agg(concat_ws(E'\n',
+            '문항: ' || (question->>'prompt'),
+            CASE WHEN char_length(btrim(coalesce(attempt.answers->>(question->>'id'), ''))) > 0
+              THEN '글 답안: ' || (attempt.answers->>(question->>'id')) END,
+            (SELECT string_agg(CASE
+              WHEN response.modality IN ('photo', 'speech') THEN
+                CASE response.modality WHEN 'photo' THEN '손글씨 확인본: ' ELSE '음성 전사 확인본: ' END ||
+                coalesce((SELECT derivation.extracted_text FROM evidence_derivations derivation
+                  WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
+                  ORDER BY (derivation.kind = 'teacher_correction') DESC, derivation.created_at DESC LIMIT 1), '')
+              WHEN response.modality = 'chat' THEN '챗봇 대화: ' || coalesce((
+                SELECT string_agg(CASE message.role WHEN 'student' THEN '학생: ' ELSE '생각 도우미: ' END || message.content ||
+                  CASE WHEN message.role = 'assistant' AND message.help_type <> 'none' THEN ' [도움: ' || message.help_type || ']' ELSE '' END, E'\n' ORDER BY message.sequence)
+                FROM assessment_chat_sessions session JOIN assessment_chat_messages message ON message.session_id = session.id
+                WHERE session.response_evidence_id = response.id
+              ), '') END, E'\n')
+              FROM attempt_response_evidence response
+              WHERE response.attempt_id = attempt.id AND response.question_id = question->>'id')
+          ), E'\n\n' ORDER BY ordinality)
+          FROM jsonb_array_elements(assessment.definition->'questions') WITH ORDINALITY AS item(question, ordinality)
+          WHERE question->>'rubricCriterionId' = c.id::text
+            OR (question->>'criterion' = c.name AND question->>'standardCode' = us.standard_code)
+        ), e.transformed_text, e.original_text, '') AS "evidenceText",
         e.teacher_verified AS "teacherVerified", c.name AS "criterionName",
         c.description AS "criterionDescription", c.high_descriptor AS high,
         c.middle_descriptor AS middle, c.low_descriptor AS low
         FROM learning_evidence e
+        LEFT JOIN student_attempts attempt ON attempt.id = e.attempt_id
+        LEFT JOIN assessments assessment ON assessment.id = attempt.assessment_id
         JOIN curriculum_students s ON s.id = e.student_id
+        LEFT JOIN class_students roster ON roster.id = s.class_student_id
         JOIN curriculum_terms t ON t.id = s.term_id
         JOIN assessment_events event ON event.id = e.event_id
         JOIN curriculum_units u ON u.id = event.unit_id AND u.term_id = t.id

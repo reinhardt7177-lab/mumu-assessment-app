@@ -13,7 +13,8 @@ const aiSchema = await readFile(new URL("../db/migrations/0003_ai_assessment_sug
 const bridgeSchema = await readFile(new URL("../db/migrations/0004_assessment_growth_bridge.sql", import.meta.url), "utf8");
 const schoolPlanSchema = await readFile(new URL("../db/migrations/0005_school_curriculum_plans.sql", import.meta.url), "utf8");
 const classroomSchema = await readFile(new URL("../db/migrations/0006_teacher_classes_and_distributions.sql", import.meta.url), "utf8");
-const schema = [coreSchema, growthSchema, aiSchema, bridgeSchema, schoolPlanSchema, classroomSchema].join("\n");
+const evidenceSchema = await readFile(new URL("../db/migrations/0008_multimodal_evidence.sql", import.meta.url), "utf8");
+const schema = [coreSchema, growthSchema, aiSchema, bridgeSchema, schoolPlanSchema, classroomSchema, evidenceSchema].join("\n");
 let pg: PGlite;
 let repo: ReturnType<typeof createAssessmentRepository>;
 const adapter = (db: PGlite): Query => async <T extends Record<string, unknown>>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows;
@@ -43,7 +44,7 @@ test("교사별 목록·상세·배포·학생 조회 권한 분리", async () =
   await assert.rejects(repo.submissions(a.id, owner()), status(404));
   await assert.rejects(repo.setStatus(a.id, owner(), "published"), status(404));
 });
-test("초안 비공개·평가별 고유 링크·미구현 응답 배포 차단", async () => {
+test("초안 비공개·평가별 고유 링크·학교 승인 없는 비텍스트 응답 배포 차단", async () => {
   const teacher = owner(); const a = await repo.create(teacher, definition()); const b = await repo.create(teacher, { ...definition(), methods: ["speech"] });
   assert.notEqual(a.shareCode, b.shareCode);
   await assert.rejects(repo.getByCode(a.shareCode), status(404));

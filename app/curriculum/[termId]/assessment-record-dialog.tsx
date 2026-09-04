@@ -64,7 +64,7 @@ export default function AssessmentRecordDialog({
   const [eventTitle, setEventTitle] = useState(evidence?.eventTitle ?? "");
   const [eventContext, setEventContext] = useState(evidence?.eventContext ?? "");
   const [occurredAt, setOccurredAt] = useState(localDateTime());
-  const [modality, setModality] = useState<Modality>(evidence?.modality ?? "text");
+  const [modality, setModality] = useState<Modality>(evidence?.modality === "multimodal" ? "text" : evidence?.modality ?? "text");
   const [assistanceLevel, setAssistanceLevel] = useState<Assistance>(evidence?.assistanceLevel ?? "independent");
   const [sourceRef, setSourceRef] = useState(evidence?.sourceRef ?? "");
   const [evidenceText, setEvidenceText] = useState(evidenceTextOf(evidence));

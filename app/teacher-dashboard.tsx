@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { AssessmentRecord } from "../lib/assessment-domain";
 import type { ClassroomRecord, DistributionRecord } from "../db/classroom-repository";
+import EvidencePolicyPanel from "./evidence-policy-panel";
 
 export default function TeacherDashboard({
   classes,
@@ -53,6 +54,8 @@ export default function TeacherDashboard({
           })}</div>}
       </section>
     </div>
+
+    <EvidencePolicyPanel />
 
     <section className="teacher-flow">
       <div><span>1</span><strong>학급·명렬 등록</strong><small>학생 번호와 별칭만 사용</small></div>

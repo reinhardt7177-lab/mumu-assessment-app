@@ -164,3 +164,22 @@
   .distribution-actions { grid-template-columns: repeat(2, 1fr); }
   .classroom-form-grid { grid-template-columns: 1fr; }
 }
+
+.evidence-policy-panel { margin-top: 14px; }
+.policy-status { padding: 6px 9px; border-radius: 999px; color: #775d32; background: #fff1d8; font-size: 9px; font-weight: 900; }
+.policy-status.enabled { color: #0e7168; background: #def6ef; }
+.policy-intro { margin-top: 11px; color: #587078; font-size: 10px; line-height: 1.65; }
+.policy-form { margin-top: 14px; display: grid; gap: 12px; }
+.policy-form label { display: grid; gap: 7px; color: #395663; font-size: 10px; font-weight: 800; }
+.policy-form select, .policy-form textarea { width: 100%; padding: 11px 12px; border: 1px solid #d4e1df; border-radius: 10px; color: #213e4c; background: white; font: inherit; }
+.policy-form textarea { min-height: 76px; resize: vertical; line-height: 1.6; }
+.policy-switch { padding: 13px; border: 1px solid #d8e5e3; border-radius: 12px; background: #f6faf9; grid-template-columns: 20px 1fr; align-items: start; }
+.policy-switch input { width: 18px; height: 18px; accent-color: #168f86; }
+.policy-switch span { display: grid; gap: 3px; }
+.policy-switch strong { color: #173d50; font-size: 11px; }
+.policy-switch small { color: #708187; font-size: 8px; font-weight: 600; }
+.provider-capabilities { padding: 9px 11px; border-radius: 9px; color: #5d4f80; background: #f3effa; font-size: 9px; }
+.policy-guardrails { padding: 12px 14px 12px 29px; border-radius: 11px; color: #5d6f75; background: #f2f6f5; display: grid; gap: 6px; font-size: 9px; line-height: 1.5; }
+.policy-connection { margin-top: 13px; padding-top: 11px; border-top: 1px solid #e2e9e8; display: flex; flex-wrap: wrap; gap: 6px; }
+.policy-connection span { padding: 5px 8px; border-radius: 999px; color: #315f5b; background: #e7f3f0; font-size: 8px; font-weight: 800; }
+.policy-connection small { flex: 0 0 100%; color: #819095; font-size: 8px; }

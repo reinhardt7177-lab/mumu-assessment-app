@@ -6,12 +6,14 @@ import type {
   CurriculumWorkflowRecord,
   WorkflowEvidenceRecord,
   WorkflowFeedbackRecord,
+  WorkflowRubricRecord,
 } from "../../../db/growth-repository";
 import AssessmentRecordDialog from "./assessment-record-dialog";
 import { FeedbackDialog, InterventionDialog, ReassessmentDialog } from "./growth-support-dialogs";
 import SemesterJudgementDialog from "./semester-judgement-dialog";
+import { requestJson } from "../../../lib/client-api";
 
-const modalityLabel = { text: "글", photo: "손글씨 사진", speech: "말하기", observation: "관찰", chat: "챗봇 대화" };
+const modalityLabel = { text: "글", photo: "손글씨 사진", speech: "말하기", observation: "관찰", chat: "챗봇 대화", multimodal: "복합 응답" };
 const assistanceLabel = {
   independent: "독립 수행",
   teacher_prompt: "교사 질문",
@@ -25,15 +27,28 @@ const feedbackStatus = {
   ready_for_reassessment: "독립 재평가 필요",
   completed: "성장 확인 완료",
 };
-type ImportedTextAnswers = { format: "mumu.text.answers.v1"; assessmentTitle: string; answers: { questionId: string; standardCode: string; criterion: string; prompt: string; answer: string }[] };
-function importedTextAnswers(value: string | null): ImportedTextAnswers | null {
+type ImportedResponse = {
+  responseEvidenceId: string;
+  modality: "photo" | "speech" | "chat";
+  assistanceLevel: string;
+  derivedText?: string | null;
+  confidence?: number | null;
+  chat?: { elapsedSeconds: number; messages: Array<{ role: "student" | "assistant"; content: string; helpType: string }> } | null;
+};
+type ImportedAnswer = { questionId: string; standardCode: string; criterion: string; prompt: string; answer?: string; textAnswer?: string | null; responses?: ImportedResponse[] };
+type ImportedAnswers = { format: "mumu.text.answers.v1" | "mumu.multimodal.answers.v2"; assessmentTitle: string; answers: ImportedAnswer[] };
+function importedAnswers(value: string | null): ImportedAnswers | null {
   if (!value?.startsWith("{")) return null;
   try {
-    const parsed = JSON.parse(value) as Partial<ImportedTextAnswers>;
-    return parsed.format === "mumu.text.answers.v1" && Array.isArray(parsed.answers) ? parsed as ImportedTextAnswers : null;
+    const parsed = JSON.parse(value) as Partial<ImportedAnswers>;
+    return (parsed.format === "mumu.text.answers.v1" || parsed.format === "mumu.multimodal.answers.v2") && Array.isArray(parsed.answers) ? parsed as ImportedAnswers : null;
   } catch { return null; }
 }
-
+function visibleResponseText(response: ImportedResponse) {
+  if (response.derivedText) return response.derivedText;
+  if (response.chat) return response.chat.messages.filter(message => message.role === "student").map(message => message.content).join("\n");
+  return "변환된 답안 없음";
+}
 type Tab = "evidence" | "feedback" | "semester";
 
 export default function CurriculumOperations({
@@ -69,7 +84,7 @@ export default function CurriculumOperations({
     {tab === "evidence" ? <div className="operation-panel" role="tabpanel">
       <div className="operation-panel-intro"><div><strong>학생이 무엇을 했는지 먼저 남깁니다</strong><p>원본·도움 수준·평가 맥락을 보존하고, 잠긴 루브릭의 각 기준을 따로 판단합니다.</p></div><span>AI 제안 ≠ 교사 최종 판단</span></div>
       {workflow.evidence.length === 0 ? <OperationEmpty title="아직 수행 증거가 없습니다." description="첫 단원 평가를 기록하면 학생별 성장 이력이 시작됩니다." action="평가·증거 기록" onAction={() => setRecording(true)} /> : <div className="evidence-work-list">
-        {workflow.evidence.map(item => <EvidenceCard key={item.id} item={item} onReview={() => setReviewEvidence(item)} onFeedback={() => setFeedbackSeed(item)} />)}
+        {workflow.evidence.map(item => <EvidenceCard key={item.id} item={item} rubric={workflow.rubrics.find(rubric => rubric.unitId === item.unitId && rubric.state === "locked")} onReview={() => setReviewEvidence(item)} onFeedback={() => setFeedbackSeed(item)} onRefresh={onRefresh} />)}
       </div>}
     </div> : null}
 
@@ -79,7 +94,7 @@ export default function CurriculumOperations({
         {workflow.feedback.map(cycle => <article key={cycle.id} className={`feedback-cycle-card status-${cycle.status}`}>
           <header><div><span>{cycle.standardCode} · {cycle.unitTitle}</span><h3>{cycle.studentName}</h3></div><em>{feedbackStatus[cycle.status]}</em></header>
           <div className="feedback-cycle-grid"><div><small>확인된 강점</small><p>{cycle.strength}</p></div><div><small>{cycle.gapType === "conceptual" ? "개념 격차" : cycle.gapType === "procedural" ? "절차 격차" : "표현·소통 격차"}</small><p>{cycle.gapDescription}</p></div><div><small>다음 학습</small><p>{cycle.nextLearning}</p></div></div>
-          <div className="growth-trace"><span>근거 판단 {cycle.basisJudgementIds.length}개</span><span>추가 학습 {cycle.interventions.length}회</span><span>재평가 {cycle.reassessments.length}회</span></div>
+          <div className="growth-trace"><span>근거 판단 {cycle.basisJudgementIds.length}개</span><span>추가 학습 {cycle.interventions.length}회</span><span>재평가 {cycle.reassessments.length}회</span></div><GrowthChange cycle={cycle} workflow={workflow} />
           {cycle.interventions.length ? <details><summary>추가 학습 기록 보기</summary>{cycle.interventions.map(item => <p key={item.id}><strong>{new Date(item.occurredAt).toLocaleDateString("ko-KR")}</strong> · {item.activity}<br /><small>{item.teacherNote}</small></p>)}</details> : null}
           <footer><button type="button" className="outline-button" disabled={cycle.status === "completed"} onClick={() => setInterventionCycle(cycle)}>＋ 추가 학습</button><button type="button" className="primary-button" disabled={cycle.status === "completed"} onClick={() => setReassessmentCycle(cycle)}>재평가 연결</button></footer>
         </article>)}
@@ -100,19 +115,45 @@ export default function CurriculumOperations({
   </section>;
 }
 
-function EvidenceCard({ item, onReview, onFeedback }: { item: WorkflowEvidenceRecord; onReview: () => void; onFeedback: () => void }) {
+function EvidenceCard({ item, rubric, onReview, onFeedback, onRefresh }: { item: WorkflowEvidenceRecord; rubric?: WorkflowRubricRecord; onReview: () => void; onFeedback: () => void; onRefresh: () => Promise<void> }) {
   const final = item.judgements.filter(judgement => judgement.state === "final");
-  const imported = importedTextAnswers(item.originalText);
-  const text = item.originalText ?? item.transformedText ?? "비공개 원본 참조로 보관된 수행 증거";
+  const imported = importedAnswers(item.transformedText ?? item.originalText);
+  const text = item.transformedText ?? item.originalText ?? "비공개 원본 참조로 보관된 수행 증거";
+  const [criterionId, setCriterionId] = useState(rubric?.criteria[0]?.id ?? "");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiNotice, setAiNotice] = useState("");
+  const runSuggestion = async () => {
+    if (!criterionId) return;
+    setAiBusy(true); setAiError(""); setAiNotice("");
+    try {
+      const data = await requestJson<{ suggestion: { suggestedLevel: string }; cached: boolean }>(`/api/teacher/curriculum/evidence/${item.id}/ai-recommendation`, {
+        method: "POST", body: JSON.stringify({ rubricCriterionId: criterionId }), signal: AbortSignal.timeout(60_000),
+      });
+      setAiNotice(`${data.cached ? "저장된" : "새"} AI 추천 ${data.suggestion.suggestedLevel}을 불러왔습니다. 원문을 보고 교사가 확정해 주세요.`);
+      await onRefresh();
+    } catch (reason) { setAiError(reason instanceof Error ? reason.message : "AI 추천을 만들지 못했습니다."); }
+    finally { setAiBusy(false); }
+  };
   return <article className="evidence-work-card">
     <header><div><span>{item.unitTitle} · {item.eventTitle}</span><h3>{item.studentName}</h3></div><div className="evidence-badges">{item.attemptId ? <em className="imported">QR 자동 수합</em> : null}<em>{modalityLabel[item.modality]}</em><em className={item.assistanceLevel === "independent" ? "independent" : "supported"}>{assistanceLabel[item.assistanceLevel]}</em></div></header>
-    {imported ? <div className="evidence-answer-list"><strong>{imported.assessmentTitle}</strong>{imported.answers.map((answer, index) => <article key={answer.questionId}><small>{answer.standardCode} · {answer.criterion}</small><p><b>{index + 1}. {answer.prompt}</b></p><blockquote>{answer.answer}</blockquote></article>)}</div> : <blockquote>{text}</blockquote>}
+    {imported ? <div className="evidence-answer-list"><strong>{imported.assessmentTitle}</strong>{imported.answers.map((answer, index) => <article key={answer.questionId}><small>{answer.standardCode} · {answer.criterion}</small><p><b>{index + 1}. {answer.prompt}</b></p>{answer.answer || answer.textAnswer ? <blockquote>{answer.answer ?? answer.textAnswer}</blockquote> : null}{answer.responses?.map(response => <div className="imported-response" key={response.responseEvidenceId}><header><span>{modalityLabel[response.modality]}</span><small>{assistanceLabel[response.assistanceLevel as keyof typeof assistanceLabel] ?? response.assistanceLevel}</small></header><blockquote>{visibleResponseText(response)}</blockquote>{response.confidence != null ? <small>변환 신뢰도 참고값 {Math.round(response.confidence * 100)}%</small> : null}</div>)}</article>)}</div> : <blockquote>{text}</blockquote>}
     <div className="criterion-chip-row">{item.judgements.length ? item.judgements.map(judgement => <span key={judgement.id} className={`level-${judgement.level.replace("판단 ", "")}`}><small>{judgement.standardCode} · {judgement.criterionName}</small><strong>{judgement.level}</strong><em>{judgement.state === "final" ? "교사 확정" : "초안"}</em></span>) : <span className="judgement-empty"><strong>루브릭 판단 전</strong><small>잠긴 기준에 따라 근거를 남겨 주세요.</small></span>}</div>
-    {item.aiSuggestions.length ? <div className="ai-suggestion-summary"><header><strong>AI 추천 · 교사 판단과 분리 보관</strong><small>참고 자료</small></header>{item.aiSuggestions.map(suggestion => <div key={suggestion.id}><span>{suggestion.criterionName}</span><b>{suggestion.suggestedLevel}</b><em>확신 {Math.round(suggestion.confidence * 100)}%</em><p>{suggestion.rationale}</p><small>불확실성: {suggestion.uncertainty}</small></div>)}</div> : <div className="ai-consent-note"><strong>AI 학생 증거 분석 비활성</strong><span>학교의 개인정보 처리 승인과 AI 전송 설정 후에만 사용합니다.</span></div>}
+    {item.aiSuggestions.length ? <div className="ai-suggestion-summary"><header><strong>AI 추천 · 교사 판단과 분리 보관</strong><small>참고 자료</small></header>{item.aiSuggestions.map(suggestion => <div key={suggestion.id}><span>{suggestion.criterionName}</span><b>{suggestion.suggestedLevel}</b><em>확신 {Math.round(suggestion.confidence * 100)}%</em><p>{suggestion.rationale}</p><blockquote>{suggestion.evidenceExcerpt}</blockquote><small>불확실성: {suggestion.uncertainty}</small><small>추가로 필요한 증거: {suggestion.missingEvidence}</small><small>평가 유의점: {suggestion.constructCaution}</small></div>)}</div> : null}
+    {rubric?.criteria.length ? <div className="ai-recommendation-control"><div><strong>평가 요소별 AI 추천</strong><small>학교 승인 ON · 익명 증거 · 교사 최종 확정</small></div><select aria-label="AI 추천 평가 요소" value={criterionId} onChange={event => setCriterionId(event.target.value)}>{rubric.criteria.map(criterion => <option key={criterion.id} value={criterion.id}>{criterion.name}</option>)}</select><button type="button" className="outline-button" disabled={aiBusy || (item.transformationStatus === "automated" && !item.teacherVerified)} onClick={() => void runSuggestion()}>{aiBusy ? "근거를 분석하는 중…" : "AI 추천 받기"}</button>{item.transformationStatus === "automated" && !item.teacherVerified ? <p>OCR·전사 결과를 원본과 대조해 교사 확인본을 먼저 저장해 주세요.</p> : null}{aiError && <p className="ai-generation-error" role="alert">{aiError}</p>}{aiNotice && <p className="save-notice" role="status">{aiNotice}</p>}</div> : <div className="ai-consent-note"><strong>잠긴 루브릭 필요</strong><span>단원 성취기준의 루브릭을 검토·잠근 뒤 AI 추천을 요청할 수 있습니다.</span></div>}
     <footer><small>{new Date(item.collectedAt).toLocaleString("ko-KR")}</small><div><button type="button" className="outline-button" onClick={onReview}>{item.judgements.length ? "판단 보완·개정" : "루브릭 판단"}</button><button type="button" className="primary-button" disabled={final.length === 0} onClick={onFeedback}>피드백 설계</button></div></footer>
   </article>;
 }
-
+function GrowthChange({ cycle, workflow }: { cycle: WorkflowFeedbackRecord; workflow: CurriculumWorkflowRecord }) {
+  const judgements = workflow.evidence.flatMap(evidence => evidence.judgements.map(judgement => ({ ...judgement, evidenceId: evidence.id, collectedAt: evidence.collectedAt })));
+  const prior = judgements.filter(item => cycle.basisJudgementIds.includes(item.id)).sort((a, b) => a.collectedAt.localeCompare(b.collectedAt)).at(-1);
+  const reassessedIds = new Set(cycle.reassessments.filter(item => item.independent).map(item => item.newEvidenceId));
+  const current = judgements.filter(item => reassessedIds.has(item.evidenceId) && item.standardCode === cycle.standardCode && item.state === "final").sort((a, b) => a.collectedAt.localeCompare(b.collectedAt)).at(-1);
+  if (!prior && !current) return null;
+  const score = (level?: string) => level === "상" ? 3 : level === "중" ? 2 : level === "하" ? 1 : 0;
+  const delta = score(current?.level) - score(prior?.level);
+  return <div className="growth-change"><div><small>최초 근거</small><strong>{prior?.level ?? "판단 보류"}</strong></div><b>→</b><div><small>독립 재평가</small><strong>{current?.level ?? "증거 대기"}</strong></div><em className={delta > 0 ? "up" : delta < 0 ? "down" : "steady"}>{current ? delta > 0 ? `+${delta}단계 성장` : delta < 0 ? "추가 확인 필요" : "수준 유지" : "재평가 연결 필요"}</em></div>;
+}
 function SemesterMatrix({ dashboard, workflow, onCreate }: { dashboard: CurriculumDashboardRecord; workflow: CurriculumWorkflowRecord; onCreate: (studentId?: string, standardCode?: string) => void }) {
   const seen = new Set<string>();
   const standards = dashboard.units.flatMap(unit => unit.standards.map(standard => ({ ...standard, unitTitle: unit.title }))).filter(standard => !seen.has(standard.code) && seen.add(standard.code));
@@ -120,7 +161,7 @@ function SemesterMatrix({ dashboard, workflow, onCreate }: { dashboard: Curricul
   const latest = new Map(workflow.semesterJudgements.map(item => [`${item.studentId}:${item.standardCode}`, item]));
   return <div className="semester-live-matrix" aria-label="학생별 성취기준 학기말 종합 판단">
     <div className="semester-matrix-row header"><strong>학생</strong>{standards.map(standard => <span key={standard.id}>{standard.code}<small>{standard.unitTitle}</small></span>)}</div>
-    {dashboard.students.map(student => <div className="semester-matrix-row" key={student.id}><strong>{student.displayName}</strong>{standards.map(standard => { const judgement = latest.get(`${student.id}:${standard.code}`); return <button type="button" key={standard.id} onClick={() => onCreate(student.id, standard.code)} aria-label={`${student.displayName} ${standard.code} 학기말 판단 ${judgement?.level ?? "판단 전"}`} className={judgement ? `semester-cell level-${judgement.level.replace("판단 ", "")}` : "semester-cell empty"}><b>{judgement?.level ?? "판단 전"}</b><small>{judgement ? `${judgement.evidence.length}개 근거 · ${judgement.state === "final" ? "확정" : "초안"}` : "누적 증거 필요"}</small></button>; })}</div>)}
+    {dashboard.students.map(student => <div className="semester-matrix-row" key={student.id}><strong><span>{student.displayName}</span><a href={`/curriculum/${dashboard.term.id}/report/${student.id}`}>종합 리포트</a></strong>{standards.map(standard => { const judgement = latest.get(`${student.id}:${standard.code}`); return <button type="button" key={standard.id} onClick={() => onCreate(student.id, standard.code)} aria-label={`${student.displayName} ${standard.code} 학기말 판단 ${judgement?.level ?? "판단 전"}`} className={judgement ? `semester-cell level-${judgement.level.replace("판단 ", "")}` : "semester-cell empty"}><b>{judgement?.level ?? "판단 전"}</b><small>{judgement ? `${judgement.evidence.length}개 근거 · ${judgement.state === "final" ? "확정" : "초안"}` : "누적 증거 필요"}</small></button>; })}</div>)}
   </div>;
 }
 

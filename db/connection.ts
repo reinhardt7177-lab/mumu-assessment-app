@@ -3,6 +3,7 @@ import { neon } from "@neondatabase/serverless";
 import { AppError } from "../lib/assessment-domain";
 import { createClassroomRepository } from "./classroom-repository";
 import { createDesignStudioRepository } from "./design-studio-repository";
+import { createEvidenceRepository } from "./evidence-repository";
 import { createGrowthRepository } from "./growth-repository";
 import { createAssessmentRepository, type Query } from "./repository";
 
@@ -12,6 +13,7 @@ let repository: ReturnType<typeof createAssessmentRepository> | undefined;
 let growthRepository: ReturnType<typeof createGrowthRepository> | undefined;
 let classroomRepository: ReturnType<typeof createClassroomRepository> | undefined;
 let designStudioRepository: ReturnType<typeof createDesignStudioRepository> | undefined;
+let evidenceRepository: ReturnType<typeof createEvidenceRepository> | undefined;
 let sharedQuery: Query | undefined;
 
 function getQuery() {
@@ -43,4 +45,9 @@ export function getClassroomRepository() {
 export function getDesignStudioRepository() {
   if (!designStudioRepository) designStudioRepository = createDesignStudioRepository(getQuery());
   return designStudioRepository;
+}
+
+export function getEvidenceRepository() {
+  if (!evidenceRepository) evidenceRepository = createEvidenceRepository(getQuery());
+  return evidenceRepository;
 }

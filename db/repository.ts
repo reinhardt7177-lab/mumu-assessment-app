@@ -223,7 +223,16 @@ export function createAssessmentRepository(query: Query) {
     async setStatus(id: string, ownerId: string, status: "published" | "closed") {
       const assessment = await getOwned(id, ownerId);
       if (assessment.status === status) return assessment;
-      if (status === "published" && assessment.definition.methods.some(m => m !== "text")) throw new AppError(409, "사진·녹음·대화 저장 연결 전에는 글쓰기 평가만 배포할 수 있습니다.");
+      if (status === "published" && assessment.definition.methods.some(method => method !== "text")) {
+        const policies = await query(`SELECT student_evidence_ai_enabled AS enabled, provider_id AS "providerId"
+          FROM teacher_evidence_policies WHERE owner_id = $1`, [ownerId]);
+        if (!policies[0]?.enabled || policies[0].providerId === "disabled") {
+          throw new AppError(409, "학생 증거 AI 안전 설정에서 학교 승인과 외부 AI 제공자를 먼저 저장해 주세요.");
+        }
+        if (assessment.definition.methods.some(method => method === "photo" || method === "speech") && !process.env.BLOB_READ_WRITE_TOKEN) {
+          throw new AppError(409, "사진·녹음 평가를 공개하려면 비공개 원본 저장소를 먼저 연결해 주세요.");
+        }
+      }
       const from = status === "published" ? "draft" : "published";
       const rows = await query(`UPDATE assessments AS a SET status = $3, published_at = CASE WHEN $3 = 'published' THEN now() ELSE published_at END, closed_at = CASE WHEN $3 = 'closed' THEN now() ELSE NULL END WHERE a.id = $1 AND a.owner_id = $2 AND a.status = $4 RETURNING a.id`, [id, ownerId, status, from]);
       if (!rows[0]) throw new AppError(409, "평가 상태가 변경되었습니다. 새로고침해 주세요. 마감한 평가는 다시 열 수 없습니다.");
@@ -281,7 +290,34 @@ export function createAssessmentRepository(query: Query) {
       if (existing.status === "submitted") throw new AppError(409, "이미 제출한 답안은 수정할 수 없습니다.");
       if (assessment.status !== "published") throw new AppError(409, "마감된 평가는 더 이상 저장할 수 없습니다.");
       if (!Number.isInteger(input.revision) || !Number.isInteger(input.timeSpentSeconds) || input.timeSpentSeconds < 0 || input.timeSpentSeconds > 86400) throw new AppError(400, "저장 정보가 올바르지 않습니다.");
-      const answers = validateAnswers(input.answers, assessment.definition, Boolean(input.submit));
+      const answers = validateAnswers(input.answers, assessment.definition, false);
+
+      if (input.submit) {
+        const missing = await query(`SELECT question->>'id' AS id
+          FROM student_attempts attempt
+          JOIN assessments assessment ON assessment.id = attempt.assessment_id
+          CROSS JOIN LATERAL jsonb_array_elements(assessment.definition->'questions') question
+          WHERE attempt.id = $1 AND NOT (
+            char_length(btrim(coalesce($2::jsonb->>(question->>'id'), ''))) > 0
+            OR EXISTS (
+              SELECT 1 FROM attempt_response_evidence response
+              WHERE response.attempt_id = attempt.id AND response.question_id = question->>'id'
+                AND (
+                  (response.modality IN ('photo', 'speech') AND EXISTS (
+                    SELECT 1 FROM evidence_derivations derivation
+                    WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
+                  ))
+                  OR (response.modality = 'chat' AND EXISTS (
+                    SELECT 1 FROM assessment_chat_sessions session
+                    JOIN assessment_chat_messages message ON message.session_id = session.id AND message.role = 'student'
+                    WHERE session.response_evidence_id = response.id
+                  ))
+                )
+            )
+          ) ORDER BY question->>'id'`, [existing.id, JSON.stringify(answers)]);
+        if (missing.length) throw new AppError(400, `모든 문항에 글·사진·음성·챗봇 중 하나로 답한 뒤 제출해 주세요. (${missing.length}문항 남음)`);
+      }
+
       const rows = await query(`WITH saved AS (
         UPDATE student_attempts AS s SET answers = $3::jsonb, revision = s.revision + 1, saved_at = now(),
           time_spent_seconds = GREATEST(s.time_spent_seconds, $5), status = $6,
@@ -302,14 +338,81 @@ export function createAssessmentRepository(query: Query) {
         SELECT s.*, a.owner_id, a.definition, event.id AS event_id
         FROM saved s JOIN assessments a ON a.id = s.assessment_id
         LEFT JOIN assessment_events event ON event.assessment_id = a.id
+      ), response_finalized AS (
+        UPDATE attempt_response_evidence response SET state = 'submitted', updated_at = now()
+        FROM linked WHERE linked.status = 'submitted' AND response.attempt_id = linked.id
+          AND (
+            (response.modality IN ('photo', 'speech') AND EXISTS (
+              SELECT 1 FROM evidence_derivations derivation
+              WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
+            ))
+            OR (response.modality = 'chat' AND EXISTS (
+              SELECT 1 FROM assessment_chat_sessions session
+              JOIN assessment_chat_messages message ON message.session_id = session.id AND message.role = 'student'
+              WHERE session.response_evidence_id = response.id
+            ))
+          )
+        RETURNING response.*
+      ), chat_finalized AS (
+        UPDATE assessment_chat_sessions session SET state = 'submitted', ended_at = now()
+        FROM response_finalized response
+        WHERE response.modality = 'chat' AND session.response_evidence_id = response.id AND session.state = 'active'
+        RETURNING session.id
       ), evidence AS (
         INSERT INTO learning_evidence (
           id, student_id, event_id, attempt_id, modality, source_kind, assistance_level,
           original_text, transformation_status, teacher_verified, collected_at, created_by
         )
-        SELECT $7, linked.curriculum_student_id, linked.event_id, linked.id, 'text', 'student_response',
-          CASE WHEN linked.definition->>'type' = '독립 수행평가' THEN 'independent' ELSE 'scaffolded' END,
-          jsonb_build_object(
+        SELECT $7, linked.curriculum_student_id, linked.event_id, linked.id,
+          CASE WHEN EXISTS (SELECT 1 FROM response_finalized) THEN 'multimodal' ELSE 'text' END,
+          CASE WHEN EXISTS (SELECT 1 FROM response_finalized) THEN 'mixed_response' ELSE 'student_response' END,
+          CASE
+            WHEN linked.definition->>'type' <> '독립 수행평가' THEN 'scaffolded'
+            WHEN EXISTS (SELECT 1 FROM response_finalized WHERE assistance_level = 'scaffolded') THEN 'scaffolded'
+            WHEN EXISTS (SELECT 1 FROM response_finalized WHERE assistance_level = 'example') THEN 'example'
+            WHEN EXISTS (SELECT 1 FROM response_finalized WHERE assistance_level = 'step_hint') THEN 'step_hint'
+            WHEN EXISTS (SELECT 1 FROM response_finalized WHERE assistance_level = 'teacher_prompt') THEN 'teacher_prompt'
+            ELSE 'independent'
+          END,
+          (CASE WHEN EXISTS (SELECT 1 FROM response_finalized) THEN jsonb_build_object(
+            'format', 'mumu.multimodal.answers.v2', 'assessmentId', linked.assessment_id,
+            'assessmentTitle', linked.definition->>'title', 'timeSpentSeconds', linked.time_spent_seconds,
+            'answers', (
+              SELECT coalesce(jsonb_agg(jsonb_build_object(
+                'questionId', question->>'id', 'standardCode', question->>'standardCode',
+                'criterion', question->>'criterion', 'prompt', question->>'prompt',
+                'textAnswer', nullif(left(coalesce(linked.answers->>(question->>'id'), ''), 6000), ''),
+                'responses', (
+                  SELECT coalesce(jsonb_agg(jsonb_build_object(
+                    'responseEvidenceId', response.id, 'modality', response.modality,
+                    'assistanceLevel', response.assistance_level,
+                    'derivedText', CASE WHEN response.modality IN ('photo', 'speech') THEN (
+                      SELECT left(derivation.extracted_text, 6000) FROM evidence_derivations derivation
+                      WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
+                      ORDER BY derivation.created_at DESC LIMIT 1
+                    ) END,
+                    'confidence', CASE WHEN response.modality IN ('photo', 'speech') THEN (
+                      SELECT derivation.confidence FROM evidence_derivations derivation
+                      WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
+                      ORDER BY derivation.created_at DESC LIMIT 1
+                    ) END,
+                    'assetIds', (SELECT coalesce(jsonb_agg(asset.id ORDER BY asset.created_at), '[]'::jsonb) FROM evidence_assets asset WHERE asset.response_evidence_id = response.id),
+                    'chat', CASE WHEN response.modality = 'chat' THEN (
+                      SELECT jsonb_build_object(
+                        'elapsedSeconds', session.elapsed_seconds,
+                        'messages', coalesce((SELECT jsonb_agg(jsonb_build_object(
+                          'role', message.role, 'content', left(message.content, 1000),
+                          'helpType', message.help_type, 'elapsedSeconds', message.elapsed_seconds
+                        ) ORDER BY message.sequence) FROM assessment_chat_messages message WHERE message.session_id = session.id), '[]'::jsonb)
+                      ) FROM assessment_chat_sessions session WHERE session.response_evidence_id = response.id
+                    ) END
+                  ) ORDER BY response.created_at), '[]'::jsonb)
+                  FROM response_finalized response WHERE response.question_id = question->>'id'
+                )
+              ) ORDER BY ordinality), '[]'::jsonb)
+              FROM jsonb_array_elements(linked.definition->'questions') WITH ORDINALITY AS item(question, ordinality)
+            )
+          ) ELSE jsonb_build_object(
             'format', 'mumu.text.answers.v1', 'assessmentId', linked.assessment_id,
             'assessmentTitle', linked.definition->>'title',
             'answers', (
@@ -320,7 +423,9 @@ export function createAssessmentRepository(query: Query) {
               ) ORDER BY ordinality), '[]'::jsonb)
               FROM jsonb_array_elements(linked.definition->'questions') WITH ORDINALITY AS item(question, ordinality)
             )
-          )::text, 'original', false, linked.submitted_at, linked.owner_id
+          ) END)::text,
+          CASE WHEN EXISTS (SELECT 1 FROM response_finalized WHERE modality IN ('photo', 'speech')) THEN 'automated' ELSE 'original' END,
+          false, linked.submitted_at, linked.owner_id
         FROM linked
         WHERE linked.status = 'submitted' AND linked.curriculum_student_id IS NOT NULL AND linked.event_id IS NOT NULL
         ON CONFLICT (attempt_id) WHERE attempt_id IS NOT NULL DO NOTHING

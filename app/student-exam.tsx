@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Answers, AssessmentDefinition, AttemptRecord, ReviewRecord } from "../lib/assessment-domain";
 import { requestJson, RequestError } from "../lib/client-api";
+import type { ResponseEvidenceRecord, StudentEvidencePayload } from "../lib/evidence-domain";
+import StudentEvidenceResponse, { responseIsComplete } from "./student-evidence-response";
 
 type Exam = {
   id: string;
@@ -21,6 +23,8 @@ export default function StudentExam({ code }: { code: string }) {
   const [attempt, setAttempt] = useState<AttemptRecord | null>(null);
   const [result, setResult] = useState<ReviewRecord | null>(null);
   const [answers, setAnswers] = useState<Answers>({});
+  const [evidence, setEvidence] = useState<ResponseEvidenceRecord[]>([]);
+  const [evidencePolicy, setEvidencePolicy] = useState<StudentEvidencePayload["policy"]>({ enabled: false, storageConfigured: false, aiConfigured: false });
   const [label, setLabel] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -28,6 +32,7 @@ export default function StudentExam({ code }: { code: string }) {
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [conflicted, setConflicted] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const attemptRef = useRef<AttemptRecord | null>(null);
   const answersRef = useRef<Answers>({});
   const flight = useRef<Promise<void> | null>(null);
@@ -42,10 +47,31 @@ export default function StudentExam({ code }: { code: string }) {
       setAnswers(data.attempt?.answers ?? {}); answersRef.current = data.attempt?.answers ?? {};
       setResult(data.result); setLabel(data.attempt?.studentLabel ?? "");
       baseSeconds.current = data.attempt?.timeSpentSeconds ?? 0; started.current = Date.now();
+      setElapsedSeconds(data.attempt?.timeSpentSeconds ?? 0);
       if (data.attempt) setNotice(data.attempt.status === "submitted" ? "서버에 제출된 답안을 불러왔어요." : "서버에 저장된 답안을 불러왔어요.");
     }).catch(reason => { if (!controller.signal.aborted) setError(reason.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [code]);
+
+  const attemptId = attempt?.id ?? null;
+  const attemptStatus = attempt?.status ?? null;
+
+  useEffect(() => {
+    if (!attemptId) return;
+    const controller = new AbortController();
+    requestJson<StudentEvidencePayload>(`/api/student/${code}/evidence`, { signal: controller.signal })
+      .then(data => { setEvidence(data.responses); setEvidencePolicy(data.policy); })
+      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "응답 자료를 불러오지 못했어요."); });
+    return () => controller.abort();
+  }, [attemptId, code]);
+
+  useEffect(() => {
+    if (!attemptId || attemptStatus !== "in_progress") return;
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.min(86400, baseSeconds.current + Math.floor((Date.now() - started.current) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [attemptId, attemptStatus]);
 
   const save = useCallback(async (submit = false) => {
     while (flight.current) await flight.current;
@@ -59,7 +85,7 @@ export default function StudentExam({ code }: { code: string }) {
         const data = await requestJson<{ attempt: AttemptRecord }>(`/api/student/${code}/attempt`, {
           method: "PUT", body: JSON.stringify({ answers: snapshot, revision: current.revision, timeSpentSeconds: Math.min(86400, baseSeconds.current + Math.floor((Date.now() - started.current) / 1000)), submit }),
         });
-        attemptRef.current = data.attempt; setAttempt(data.attempt);
+        attemptRef.current = data.attempt; setAttempt(data.attempt); setElapsedSeconds(data.attempt.timeSpentSeconds);
         if (JSON.stringify(snapshot) === JSON.stringify(answersRef.current)) {
           setDirty(false); setNotice(submit ? "제출 완료 · 서버 저장이 확인됐어요." : `서버 저장 완료 · ${new Date(data.attempt.savedAt).toLocaleTimeString("ko-KR")}`);
         } else setNotice("새로 쓴 내용은 저장 대기 중이에요.");
@@ -92,7 +118,7 @@ export default function StudentExam({ code }: { code: string }) {
       const data = await requestJson<{ attempt: AttemptRecord }>(`/api/student/${code}/attempt`, { method: "POST", body: JSON.stringify({ studentLabel: label }) });
       attemptRef.current = data.attempt; setAttempt(data.attempt);
       answersRef.current = data.attempt.answers; setAnswers(data.attempt.answers);
-      baseSeconds.current = data.attempt.timeSpentSeconds; started.current = Date.now();
+      baseSeconds.current = data.attempt.timeSpentSeconds; started.current = Date.now(); setElapsedSeconds(data.attempt.timeSpentSeconds);
       setNotice("참여 정보가 서버에 저장됐어요. 이제 답을 써보세요.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "참여하지 못했어요."); }
     finally { setBusy(false); }
@@ -104,8 +130,17 @@ export default function StudentExam({ code }: { code: string }) {
     catch (reason) { setError(reason instanceof Error ? reason.message : "결과를 불러오지 못했어요."); }
     finally { setBusy(false); }
   };
+  const changeAnswer = (questionId: string, value: string) => {
+    const next = { ...answersRef.current, [questionId]: value };
+    answersRef.current = next;
+    setAnswers(next);
+    setDirty(true);
+    setNotice("변경 내용 저장 대기 중…");
+  };
   const submitted = attempt?.status === "submitted";
-  const completed = exam?.definition.questions.filter(q => answers[q.id]?.trim()).length ?? 0;
+  const completed = exam?.definition.questions.filter(question =>
+    Boolean(answers[question.id]?.trim()) || evidence.some(item => item.questionId === question.id && responseIsComplete(item))
+  ).length ?? 0;
 
   return <main className="exam-shell real-exam">
     <header className="exam-header"><div className="exam-brand"><span>M</span><strong>Mumu 평가</strong></div><span>학생 시험지</span></header>
@@ -120,9 +155,20 @@ export default function StudentExam({ code }: { code: string }) {
         {exam.definition.questions.map((question, index) => <section className="response-card real-question" key={question.id}>
           <div className="question-editor-head"><p className="kicker">문항 {index + 1}</p><span>{question.points}점 · {question.criterion}</span></div>
           <h2 style={{ whiteSpace: "pre-wrap" }}>{question.prompt}</h2>
-          <label className="sr-only" htmlFor={`answer-${question.id}`}>문항 {index + 1} 답안</label>
-          <textarea id={`answer-${question.id}`} value={answers[question.id] ?? ""} maxLength={10000} disabled={!attempt || submitted || busy || exam.status === "closed"} onChange={event => { const next = { ...answersRef.current, [question.id]: event.target.value }; answersRef.current = next; setAnswers(next); setDirty(true); setNotice("변경 내용 저장 대기 중…"); }} placeholder={attempt ? "나의 생각과 근거를 써주세요." : "위에서 번호 또는 별칭을 입력하고 시작해 주세요."} />
-          <small>{(answers[question.id] ?? "").length} / 10,000자</small>
+          <StudentEvidenceResponse
+            code={code}
+            question={question}
+            methods={exam.definition.methods}
+            disabled={!attempt || submitted || busy || exam.status === "closed"}
+            textValue={answers[question.id] ?? ""}
+            elapsedSeconds={elapsedSeconds}
+            evidence={evidence}
+            policy={evidencePolicy}
+            onTextChange={value => changeAnswer(question.id, value)}
+            onEvidenceChange={setEvidence}
+            onNotice={setNotice}
+            onError={setError}
+          />
         </section>)}
         {attempt && !submitted && exam.status === "published" && <div className="student-actions"><button className="outline-button" disabled={busy || conflicted} onClick={() => void save()}>지금 저장</button><button className="primary-button" disabled={busy || completed !== exam.definition.questions.length || conflicted} onClick={submit}>{busy ? "저장하는 중…" : "답안 최종 제출"}</button></div>}
         {submitted && <section className="response-card result-card"><p className="kicker">{label}의 평가 결과</p>{result ? <><h2>시험 결과 {result.level} · {result.total} / {result.maxTotal}점</h2><p className="student-feedback">{result.feedback}</p>{result.questionScores.map(score => <p key={score.questionId}>{exam.definition.questions.findIndex(q => q.id === score.questionId) + 1}번 · {score.points}점 — {score.reason}</p>)}{exam.rosterRequired ? <p className="growth-result-note">교육과정 성장 수준은 선생님이 여러 수행 증거와 추가 학습을 함께 살펴 별도로 판단합니다.</p> : null}</> : <><h2>답안이 제출됐어요.</h2><p>{exam.rosterRequired ? "답안은 단원 성장 기록에 안전하게 수합됐어요. " : ""}선생님이 확인하고 공개하면 이 시험지에서 내 결과를 볼 수 있어요.</p></>}<button className="outline-button" disabled={busy} onClick={refreshResult}>결과 다시 확인</button></section>}
