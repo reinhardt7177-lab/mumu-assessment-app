@@ -39,7 +39,7 @@ export async function runDesignGeneration<T>(input: {
   prompt: string;
   maxOutputTokens?: number;
 }) {
-  const model = process.env.AI_MODEL ?? "openai/gpt-5.4-mini";
+  const model = process.env.AI_MODEL ?? "openai/gpt-5.6-luna";
   const hash = createHash("sha256").update(JSON.stringify({ model, feature: input.feature, promptVersion: input.promptVersion, input: input.inputJson })).digest("hex");
   const designs = getDesignStudioRepository();
   const cached = await designs.findCompletedGeneration(input.teacherId, input.sessionId, input.feature, model, input.promptVersion, hash);

@@ -7,7 +7,7 @@ import curriculum from "../../../../data/achievement-standards.2022.json";
 import { getRepository } from "../../../../db/connection";
 
 export const maxDuration = 30;
-const promptVersion = "elementary-questions-v2";
+const promptVersion = "elementary-questions-v3";
 
 const requestSchema = z.object({
   title: z.string().trim().max(120),
@@ -21,15 +21,15 @@ const requestSchema = z.object({
   count: z.number().int().min(1).max(5).default(3),
 });
 
-const questionSchema = z.object({
-  questions: z.array(z.object({
-    prompt: z.string().trim().min(10).max(500).describe("학생에게 직접 제시할 명확한 평가 문항"),
-    kind: z.enum(["서술형", "선택형"]),
-    standardCode: z.string().trim().min(4).max(30),
-    criterion: z.enum(["개념 이해", "근거 제시", "논리적 설명"]),
-    points: z.number().int().min(5).max(40),
-  })),
+const questionItemSchema = z.object({
+  prompt: z.string().trim().min(10).max(500).describe("학생에게 직접 제시할 명확한 평가 문항"),
+  kind: z.enum(["서술형", "선택형"]),
+  standardCode: z.string().trim().min(4).max(30),
+  criterion: z.enum(["개념 이해", "근거 제시", "논리적 설명"]),
+  points: z.number().int().min(5).max(40),
 });
+
+const questionSchema = z.object({ questions: z.array(questionItemSchema) });
 
 const safeProviderMetadata = (value: unknown) => {
   try { return JSON.parse(JSON.stringify(value ?? {})) as Record<string, unknown>; }
@@ -69,7 +69,7 @@ export async function POST(request: Request) {
   const standardsText = verifiedStandards
     .map((standard) => `- [${standard.code}] ${standard.domain}: ${standard.content}`)
     .join("\n");
-  const model = process.env.AI_MODEL ?? "openai/gpt-5.4-mini";
+  const model = process.env.AI_MODEL ?? "openai/gpt-5.6-luna";
   const generationInput = { title, subject, learningGoal, standards: verifiedStandards, count };
   const inputHash = createHash("sha256").update(JSON.stringify({ promptVersion, model, ...generationInput })).digest("hex");
   const repository = getRepository();
@@ -96,12 +96,16 @@ export async function POST(request: Request) {
 
   const startedAt = Date.now();
   try {
+    const allowedCodeValues = verifiedStandards.map(standard => standard.code) as [string, ...string[]];
+    const generatedQuestionSchema = questionItemSchema.extend({
+      standardCode: z.enum(allowedCodeValues).describe("선택한 성취기준 코드. 대괄호나 설명 없이 코드만 입력"),
+    });
     const result = await generateText({
       model,
       output: Output.object({
         name: "ElementaryAssessmentQuestions",
         description: "초등학교 성취기준에 정렬된 교사용 평가 문항 초안",
-        schema: questionSchema.extend({ questions: questionSchema.shape.questions.length(count) }),
+        schema: z.object({ questions: z.array(generatedQuestionSchema).length(count) }),
       }),
       maxOutputTokens: 1800,
       system: [
@@ -118,7 +122,7 @@ export async function POST(request: Request) {
         `학습 목표: ${learningGoal}`,
         "선택한 성취기준:",
         standardsText,
-        `서로 겹치지 않는 평가 문항 ${count}개를 만드세요. standardCode에는 위 코드 중 하나만 사용하세요.`,
+        `서로 겹치지 않는 평가 문항 ${count}개를 만드세요. standardCode에는 위 코드 중 하나를 대괄호 없이 정확히 복사하세요.`,
       ].join("\n"),
       providerOptions: {
         gateway: {
