@@ -40,6 +40,7 @@ function captionTrack(text?: string | null) {
 
 export function responseIsComplete(response: ResponseEvidenceRecord | null) {
   if (!response) return false;
+  if (response.modality === "screen") return response.assets.length > 0;
   if (response.modality === "chat") return Boolean(response.chat?.messages.some(message => message.role === "student"));
   return response.derivations.some(item => item.status === "complete" && Boolean(item.extractedText?.trim()));
 }

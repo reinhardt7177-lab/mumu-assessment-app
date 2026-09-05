@@ -62,14 +62,27 @@ export const questionDraftSchema = z.object({
   choices: z.array(z.string().trim().min(1).max(300)).max(8).optional(),
   answerKey: z.array(z.string().trim().min(1).max(500)).max(10).optional(),
   evidenceExpected: z.string().trim().min(5).max(1000),
+  responseMethods: z.array(assessmentMethodSchema).min(1).max(5).optional(),
 });
 export const assessmentDraftSchema = z.object({ questions: z.array(questionDraftSchema).min(1).max(20) });
 export const assessmentGenerationDraftSchema = z.object({
-  questions: z.array(questionDraftSchema.extend({
+  questions: z.array(questionDraftSchema.omit({ responseMethods: true }).extend({
     choices: z.array(z.string().trim().min(1).max(300)).max(8),
     answerKey: z.array(z.string().trim().min(1).max(500)).max(10),
   })).min(1).max(20),
 });
+
+export const questionPlanSchema = z.object({
+  선택형: z.number().int().min(0).max(20),
+  단답형: z.number().int().min(0).max(20),
+  서술형: z.number().int().min(0).max(20),
+  말하기: z.number().int().min(0).max(20),
+}).refine(plan => { const total = Object.values(plan).reduce((sum, count) => sum + count, 0); return total >= 1 && total <= 20; });
+export type QuestionPlan = z.infer<typeof questionPlanSchema>;
+export const defaultQuestionPlan: QuestionPlan = { 선택형: 1, 단답형: 1, 서술형: 1, 말하기: 0 };
+export function matchesQuestionPlan(questions: QuestionDraft[], plan: QuestionPlan) {
+  return Object.entries(plan).every(([kind, count]) => questions.filter(question => question.kind === kind).length === count);
+}
 
 export const validityThreatSchema = z.object({
   severity: z.enum(["major", "moderate", "minor"]),
@@ -95,7 +108,7 @@ export const designDraftPatchSchema = z.object({
   standards: z.array(alignmentCandidateSchema).min(1).max(8).optional(),
   competency: competencyUnpackSchema.optional(),
   rubric: z.array(rubricDraftItemSchema).min(1).max(10).optional(),
-  questions: z.array(questionDraftSchema).min(1).max(20).optional(),
+  questions: z.array(questionDraftSchema).max(20).optional(),
   methods: z.array(assessmentMethodSchema).min(1).max(5).optional(),
   validity: validityAuditSchema.optional(),
 }).refine(value => Object.keys(value).length > 0);
@@ -119,6 +132,7 @@ export type DesignSessionRecord = {
   status: "draft" | "ready" | "approved";
   currentStep: number;
   approvedAssessmentId: string | null;
+  questionPlan?: QuestionPlan | null;
   createdAt: string;
   updatedAt: string;
   source: null | { id: string; kind: "direct_text" | "upload"; fileName: string | null; mimeType: string | null; sha256: string | null; text: string };
@@ -207,10 +221,12 @@ export function basicQuestionDraft(rubric: RubricDraftItem[]): QuestionDraft[] {
 export function runDeterministicValidityAudit(input: Pick<DesignSessionRecord, "learningGoal" | "standards"> & { rubric: RubricDraftItem[]; questions: QuestionDraft[]; methods?: AssessmentDefinition["methods"] }): ValidityAudit {
   const selectedCodes = new Set(input.standards.filter(item => item.state === "selected").map(item => item.code));
   const questionCodes = new Set(input.questions.map(item => item.standardCode));
-  const criterionNames = new Set(input.rubric.map(item => item.name));
+  const criterionNames = new Set(input.rubric.map(item => `${item.standardCode}:${item.name}`));
   const threats: ValidityAudit["threats"] = [];
   for (const code of selectedCodes) if (!questionCodes.has(code)) threats.push({ severity: "major", issue: `${code} 성취기준을 확인할 문항이 없습니다.`, recommendation: "해당 성취기준의 관찰 가능한 수행을 요구하는 문항을 추가하세요." });
-  if (input.questions.some(item => !criterionNames.has(item.criterion))) threats.push({ severity: "major", issue: "일부 문항이 루브릭 기준과 연결되지 않았습니다.", recommendation: "각 문항에 하나의 명확한 루브릭 기준을 연결하세요." });
+  if (input.questions.some(item => !criterionNames.has(`${item.standardCode}:${item.criterion}`))) threats.push({ severity: "major", issue: "일부 문항이 해당 성취기준의 루브릭과 연결되지 않았습니다.", recommendation: "각 문항에 같은 성취기준의 명확한 루브릭 기준을 연결하세요." });
+  if (input.questions.some(item => item.responseMethods && (new Set(item.responseMethods).size !== item.responseMethods.length || item.responseMethods.some(method => input.methods && !input.methods.includes(method))))) threats.push({ severity: "major", issue: "문항별 응답 방식과 평가 전체의 허용 방식이 일치하지 않습니다.", recommendation: "문항별 응답 방식을 중복 없이 다시 지정하세요." });
+  if (input.questions.some(item => item.kind === "말하기" && !(item.responseMethods ?? input.methods ?? ["speech"]).includes("speech"))) threats.push({ severity: "major", issue: "말하기 문항에 음성 응답이 허용되지 않았습니다.", recommendation: "해당 문항의 오럴 테스트 응답 방식을 켜세요." });
   if (input.rubric.some(item => new Set([item.high, item.middle, item.low]).size < 3)) threats.push({ severity: "major", issue: "수준별 루브릭 서술이 구분되지 않는 기준이 있습니다.", recommendation: "상·중·하를 양의 차이가 아니라 수행의 질적 차이로 다시 서술하세요." });
   if (input.questions.some(item => item.kind === "선택형" && ((item.choices ?? []).length < 2 || (item.answerKey ?? []).length !== 1 || !(item.choices ?? []).includes((item.answerKey ?? [])[0])))) threats.push({ severity: "major", issue: "보기 또는 정답이 완성되지 않은 선택형 문항이 있습니다.", recommendation: "서로 다른 보기를 2개 이상 쓰고 그중 정답 하나를 지정하세요." });
   if (input.questions.some(item => item.kind === "단답형" && !(item.answerKey ?? []).length)) threats.push({ severity: "major", issue: "인정할 정답이 없는 단답형 문항이 있습니다.", recommendation: "표기 차이를 고려해 인정할 정답을 한 개 이상 입력하세요." });
@@ -244,6 +260,6 @@ export function toAssessmentDefinition(session: DesignSessionRecord): Assessment
     methods: session.blueprint.methods,
     grading: session.blueprint.grading,
     rubric: session.blueprint.rubric.map(item => ({ name: item.name, standardCode: item.standardCode, high: item.high, middle: item.middle, low: item.low })),
-    questions: session.blueprint.questions.map(item => ({ id: item.id, prompt: item.prompt, kind: item.kind, standardCode: item.standardCode, criterion: item.criterion, points: item.points, choices: item.choices, answerKey: item.answerKey })),
+    questions: session.blueprint.questions.map(item => ({ id: item.id, prompt: item.prompt, kind: item.kind, standardCode: item.standardCode, criterion: item.criterion, points: item.points, choices: item.choices, answerKey: item.answerKey, responseMethods: item.responseMethods })),
   });
 }

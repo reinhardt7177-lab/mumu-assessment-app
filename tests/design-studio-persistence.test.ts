@@ -4,14 +4,19 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { createDesignStudioRepository } from "../db/design-studio-repository";
+import { createGrowthRepository } from "../db/growth-repository";
+import { createEvidenceRepository } from "../db/evidence-repository";
+import { pendingDesignChanges } from "../lib/design-editor-state";
+import { evidenceRubrics } from "../lib/evidence-rubrics";
 import { createAssessmentRepository, type Query } from "../db/repository";
 import { AppError } from "../lib/assessment-domain";
-import { basicCompetencyDraft, basicQuestionDraft, basicRubricDraft, runDeterministicValidityAudit, toAssessmentDefinition } from "../lib/design-studio-domain";
+import { basicCompetencyDraft, basicQuestionDraft, basicRubricDraft, defaultQuestionPlan, matchesQuestionPlan, questionPlanSchema, runDeterministicValidityAudit, toAssessmentDefinition } from "../lib/design-studio-domain";
+
 
 const migrationNames = [
   "0001_assessment_core.sql", "0002_curriculum_growth.sql", "0003_ai_assessment_suggestions.sql",
   "0004_assessment_growth_bridge.sql", "0005_school_curriculum_plans.sql",
-  "0006_teacher_classes_and_distributions.sql", "0007_design_studio.sql",
+  "0006_teacher_classes_and_distributions.sql", "0007_design_studio.sql", "0008_multimodal_evidence.sql", "0009_screen_recording_evidence.sql",
 ];
 const schema = (await Promise.all(migrationNames.map(name => readFile(new URL(`../db/migrations/${name}`, import.meta.url), "utf8")))).join("\n");
 const adapter = (db: PGlite): Query => async <T extends Record<string, unknown>>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows;
@@ -20,15 +25,88 @@ const status = (code: number) => (error: unknown) => error instanceof AppError &
 let pg: PGlite;
 let designs: ReturnType<typeof createDesignStudioRepository>;
 let assessments: ReturnType<typeof createAssessmentRepository>;
+const previousBlobToken = process.env.BLOB_READ_WRITE_TOKEN;
 
 before(async () => {
+  process.env.BLOB_READ_WRITE_TOKEN = "synthetic-test-token";
   pg = await PGlite.create();
   await pg.exec(schema);
   const query = adapter(pg);
   designs = createDesignStudioRepository(query);
   assessments = createAssessmentRepository(query);
 });
-after(async () => { await pg.close(); });
+after(async () => { await pg.close(); if (previousBlobToken === undefined) delete process.env.BLOB_READ_WRITE_TOKEN; else process.env.BLOB_READ_WRITE_TOKEN = previousBlobToken; });
+
+test("응답 방식 수정은 생성 전에 저장 대상이며 저장된 감사는 불필요하게 무효화하지 않는다", async () => {
+  const saved = await preparedSession(`teacher-${crypto.randomUUID()}`);
+  assert.deepEqual(pendingDesignChanges(saved, saved), {});
+  const edited = { ...saved, blueprint: { ...saved.blueprint!, methods: ["speech"] as const } };
+  assert.deepEqual(pendingDesignChanges({ ...edited, blueprint: { ...edited.blueprint, methods: ["speech"] } }, saved), { methods: ["speech"] });
+});
+
+test("생성 전 유형별 문항 수를 검증하고 개별 문항 응답 설정 오류를 승인 전에 차단", async () => {
+  assert.equal(questionPlanSchema.safeParse(defaultQuestionPlan).success, true);
+  assert.equal(questionPlanSchema.safeParse({ 선택형: 0, 단답형: 0, 서술형: 0, 말하기: 0 }).success, false);
+  assert.equal(questionPlanSchema.safeParse({ ...defaultQuestionPlan, 선택형: 20 }).success, false);
+  const session = await preparedSession(`teacher-${crypto.randomUUID()}`);
+  const first = session.blueprint!.questions[0];
+  const questions = (["선택형", "단답형", "서술형"] as const).map(kind => ({ ...first, kind }));
+  assert.equal(matchesQuestionPlan(questions, defaultQuestionPlan), true);
+  assert.equal(matchesQuestionPlan([...questions, first], defaultQuestionPlan), false);
+  const audit = runDeterministicValidityAudit({ ...session, rubric: session.blueprint!.rubric, methods: ["text", "speech"], questions: [{ ...first, kind: "말하기", responseMethods: ["text"] }] });
+  assert.equal(audit.blocked, true);
+  assert.ok(audit.threats.some(item => item.issue.includes("음성 응답")));
+});
+
+test("스튜디오 승인→단원 루브릭→녹화 단독 제출→성장 증거, 중복 승인과 타교사 연결 차단", async () => {
+  const owner = `teacher-${crypto.randomUUID()}`;
+  const growth = createGrowthRepository(adapter(pg));
+  const media = createEvidenceRepository(adapter(pg));
+  const term = await growth.createTerm(owner, { schoolYear: 2026, semester: 1, grade: 6, className: "합성 6-1", subject: "사회" });
+  const unit = await growth.createUnit(term.id, owner, { orderIndex: 1, title: "합성 민주주의 단원", standardCodes: ["6사01-01"] });
+  const student = await growth.createStudent(term.id, owner, { studentRef: "synthetic-01", displayName: "합성 학생" });
+  let session = await preparedSession(owner);
+  session = await designs.saveBlueprint(session.id, owner, { ...session.blueprint!, methods: ["screen"], source: "teacher" });
+  session = await designs.saveValidity(session.id, owner, runDeterministicValidityAudit({ ...session, ...session.blueprint! }), "teacher");
+  const definition = toAssessmentDefinition(session);
+  const link = { unitId: unit.id, eventType: "initial" as const, context: session.learningGoal, occurredAt: new Date().toISOString() };
+  await assert.rejects(designs.approveInUnit(session.id, "other-teacher", definition, link), status(404));
+  await assert.rejects(designs.approveInUnit(session.id, owner, definition, { ...link, unitId: crypto.randomUUID() }), status(409));
+  assert.equal((await assessments.list(owner)).length, 0);
+  const id = await designs.approveInUnit(session.id, owner, definition, link);
+  assert.equal(await designs.approveInUnit(session.id, owner, definition, link), id);
+  const assessment = await assessments.getOwned(id, owner);
+  assert.equal(assessment.curriculumLink?.unitId, unit.id);
+  assert.ok(assessment.definition.questions[0].rubricCriterionId);
+  assert.equal((await growth.getWorkflow(term.id, owner)).rubrics.length, 1);
+  await media.savePolicy(owner, { enabled: true, providerId: "vercel-gateway", acknowledgement: "합성 자료만 사용하는 연결 회귀 테스트입니다.", retentionDays: 30 });
+  await assessments.setStatus(id, owner, "published");
+  const { attempt, token } = await assessments.startAttempt(assessment.shareCode, student.studentRef);
+  await assert.rejects(assessments.saveAttempt(assessment.shareCode, token, { answers: {}, revision: attempt.revision, timeSpentSeconds: 30, submit: true }), status(400));
+  const asset = await media.createAsset(attempt.id, { questionId: definition.questions[0].id, modality: "screen", blobPathname: "synthetic/screen.webm", originalFilename: "synthetic.webm", mimeType: "video/webm", byteSize: 128, sha256: "a".repeat(64), identifiersRemovedConfirmed: true });
+  await assessments.saveAttempt(assessment.shareCode, token, { answers: {}, revision: attempt.revision, timeSpentSeconds: 30, submit: true });
+  assert.equal((await media.listAttemptResponses(attempt.id))[0].state, "submitted");
+  const workflow = await growth.getWorkflow(term.id, owner);
+  assert.equal(workflow.evidence.length, 1);
+  assert.match(workflow.evidence[0].originalText!, /screen/);
+  assert.ok(workflow.evidence[0].originalText!.includes(asset.assetId));
+  await assert.rejects(growth.getAiSuggestionContext(workflow.evidence[0].id, assessment.definition.questions[0].rubricCriterionId!, owner), status(409));
+  await assert.rejects(media.createAsset(attempt.id, { questionId: definition.questions[0].id, modality: "screen", blobPathname: "synthetic/second.webm", originalFilename: "second.webm", mimeType: "video/webm", byteSize: 128, sha256: "b".repeat(64), identifiersRemovedConfirmed: true }), status(409));
+  const repeat = await preparedSession(owner);
+  const repeatId = await designs.approveInUnit(repeat.id, owner, toAssessmentDefinition(repeat), { ...link, eventType: "reassessment" });
+  assert.equal((await assessments.getOwned(repeatId, owner)).definition.questions[0].rubricCriterionId, assessment.definition.questions[0].rubricCriterionId);
+  assert.equal((await growth.getWorkflow(term.id, owner)).rubrics.length, 1);
+  let revised = await preparedSession(owner);
+  revised = await designs.saveBlueprint(revised.id, owner, { ...revised.blueprint!, rubric: revised.blueprint!.rubric.map(item => ({ ...item, high: item.high + " 두 사례를 비교한다." })), source: "teacher" });
+  revised = await designs.saveValidity(revised.id, owner, runDeterministicValidityAudit({ ...revised, ...revised.blueprint! }), "teacher");
+  const revisedId = await designs.approveInUnit(revised.id, owner, toAssessmentDefinition(revised), link);
+  const changedCriterion = (await assessments.getOwned(revisedId, owner)).definition.questions[0].rubricCriterionId!;
+  const after = await growth.getWorkflow(term.id, owner);
+  assert.equal(after.rubrics.length, 2);
+  assert.deepEqual(evidenceRubrics(after.rubrics, after.evidence[0]).flatMap(item => item.criteria.map(criterion => criterion.id)), [assessment.definition.questions[0].rubricCriterionId]);
+  await assert.rejects(growth.saveJudgement(after.evidence[0].id, owner, { rubricCriterionId: changedCriterion, level: "상", evidenceExcerpt: "합성 수행 원문입니다.", rationale: "다른 버전으로 소급 채점하면 안 됩니다.", state: "final" }), status(404));
+  await assert.rejects(growth.getAiSuggestionContext(after.evidence[0].id, changedCriterion, owner), status(409));
+});
 
 test("문항 유형 조합과 말하기 응답 방식의 타당도를 점검", () => {
   const standards = [{ code: "6사01-01", domain: "정치", content: "민주주의의 의미와 중요성을 이해하고 시민의 역할을 탐색한다.", rationale: "학습 목표에 직접 연결됩니다.", confidence: .9, state: "selected" as const }];
@@ -161,4 +239,9 @@ test("AI 생성 결과와 사용량을 주소 가능한 실행 이력으로 저�
   const cached = await designs.findCompletedGeneration(ownerId, session.id, "rubric_generation", "openai/gpt-5.4-mini", "test-v1", inputHash);
   assert.equal(cached?.id, runId);
   assert.equal(Number(cached?.totalTokens), 360);
+  await designs.rejectGeneration(runId, ownerId, "합성 출력의 내용 검증에 실패했습니다.");
+  assert.equal(await designs.findCompletedGeneration(ownerId, session.id, "rubric_generation", "openai/gpt-5.4-mini", "test-v1", inputHash), null);
+  const rejected = await pg.query<{ total_tokens: number; output_json: unknown }>("SELECT total_tokens, output_json FROM design_generation_runs WHERE id = $1", [runId]);
+  assert.equal(rejected.rows[0].total_tokens, 360);
+  assert.ok(rejected.rows[0].output_json);
 });

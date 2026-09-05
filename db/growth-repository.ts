@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+
+// Published assessments pin criterion IDs. Legacy/manual evidence without IDs keeps unit-based review.
+const assessmentCriterionGuard = `AND NOT EXISTS (
+  SELECT 1 FROM assessments pinned WHERE pinned.id = event.assessment_id
+    AND EXISTS (SELECT 1 FROM jsonb_array_elements(pinned.definition->'questions') q WHERE q->>'rubricCriterionId' IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(pinned.definition->'questions') q WHERE q->>'rubricCriterionId' = c.id::text)
+)`;
 import { AppError } from "../lib/assessment-domain";
 import {
   aiSuggestionCompletionSchema,
@@ -842,7 +849,7 @@ export function createGrowthRepository(query: Query) {
           ), E'\n\n' ORDER BY ordinality)
           FROM jsonb_array_elements(assessment.definition->'questions') WITH ORDINALITY AS item(question, ordinality)
           WHERE question->>'rubricCriterionId' = c.id::text
-            OR (question->>'criterion' = c.name AND question->>'standardCode' = us.standard_code)
+            OR (question->>'rubricCriterionId' IS NULL AND question->>'criterion' = c.name AND question->>'standardCode' = us.standard_code)
         ), e.transformed_text, e.original_text, '') AS "evidenceText",
         e.teacher_verified AS "teacherVerified", c.name AS "criterionName",
         c.description AS "criterionDescription", c.high_descriptor AS high,
@@ -859,7 +866,21 @@ export function createGrowthRepository(query: Query) {
         JOIN rubric_versions rv ON rv.id = c.rubric_version_id AND rv.state = 'locked'
         JOIN unit_standards us ON us.id = rv.unit_standard_id AND us.unit_id = u.id
         WHERE e.id = $1 AND t.owner_id = $3
+          ${assessmentCriterionGuard}
           AND char_length(coalesce(e.original_text, e.transformed_text, '')) > 0
+          AND (attempt.id IS NULL OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(assessment.definition->'questions') q
+            WHERE (q->>'rubricCriterionId' = c.id::text OR (q->>'rubricCriterionId' IS NULL AND q->>'criterion' = c.name AND q->>'standardCode' = us.standard_code))
+              AND (char_length(btrim(coalesce(attempt.answers->>(q->>'id'), ''))) > 0
+                OR EXISTS (SELECT 1 FROM attempt_response_evidence r WHERE r.attempt_id = attempt.id AND r.question_id = q->>'id'
+                  AND ((r.modality IN ('photo', 'speech') AND EXISTS (
+                    SELECT 1 FROM evidence_derivations d WHERE d.response_evidence_id = r.id AND d.status = 'complete' AND char_length(btrim(d.extracted_text)) > 0))
+                    OR (r.modality = 'chat' AND EXISTS (
+                      SELECT 1 FROM assessment_chat_sessions cs JOIN assessment_chat_messages cm ON cm.session_id = cs.id
+                      WHERE cs.response_evidence_id = r.id AND cm.role = 'student' AND char_length(btrim(cm.content)) > 0))
+                  ))
+              )
+          ))
           AND (e.transformation_status <> 'automated' OR e.teacher_verified)`,
       [evidenceId, rubricCriterionId, ownerId]);
       if (!rows[0]) throw new AppError(409, "잠긴 루브릭과 교사가 확인한 학생 수행 원문을 먼저 준비해 주세요.");
@@ -908,6 +929,7 @@ export function createGrowthRepository(query: Query) {
         JOIN rubric_versions rv ON rv.id = c.rubric_version_id AND rv.state = 'locked'
         JOIN unit_standards us ON us.id = rv.unit_standard_id AND us.unit_id = u.id
         WHERE e.id = $1 AND t.owner_id = $3
+          ${assessmentCriterionGuard}
       ), inserted AS (
         INSERT INTO ai_generation_runs (id, owner_id, evidence_id, rubric_criterion_id, feature, model, prompt_version, input_hash)
         SELECT $4, $3, evidence_id, criterion_id, 'criterion_suggestion', $5, $6, $7 FROM authorized
@@ -1018,6 +1040,7 @@ export function createGrowthRepository(query: Query) {
         JOIN rubric_versions rv ON rv.id = c.rubric_version_id AND rv.state = 'locked'
         JOIN unit_standards us ON us.id = rv.unit_standard_id AND us.unit_id = u.id
         WHERE e.id = $1 AND t.owner_id = $2 AND t.status <> 'closed'
+          ${assessmentCriterionGuard}
       ), previous AS (
         SELECT j.id, j.revision FROM criterion_judgements j
         JOIN authorized a ON a.evidence_id = j.evidence_id AND a.criterion_id = j.rubric_criterion_id

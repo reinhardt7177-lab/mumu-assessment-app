@@ -11,7 +11,7 @@ import { redactStudentIdentifiers } from "../lib/evidence-redaction";
 const migrationNames = [
   "0001_assessment_core.sql", "0002_curriculum_growth.sql", "0003_ai_assessment_suggestions.sql",
   "0004_assessment_growth_bridge.sql", "0005_school_curriculum_plans.sql",
-  "0006_teacher_classes_and_distributions.sql", "0007_design_studio.sql", "0008_multimodal_evidence.sql",
+  "0006_teacher_classes_and_distributions.sql", "0007_design_studio.sql", "0008_multimodal_evidence.sql", "0009_screen_recording_evidence.sql",
 ];
 const schema = (await Promise.all(migrationNames.map(name => readFile(new URL(`../db/migrations/${name}`, import.meta.url), "utf8")))).join("\n");
 const adapter = (db: PGlite): Query => async <T extends Record<string, unknown>>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows;
@@ -96,6 +96,21 @@ test("선택 제공자·식별정보 제거 확인·OCR·챗봇·복합 제출·
   const corrected = await evidence.listOwnedAttemptResponses(attempt.id, teacher);
   assert.equal(corrected.find(item => item.modality === "photo")?.derivations[0]?.kind, "teacher_correction");
   assert.match(corrected.find(item => item.modality === "photo")?.derivations[0]?.correctionReason ?? "", /원본과 대조/);
+});
+
+test("평가 전체에 허용해도 문항에서 해제한 사진·챗봇 응답은 서버에서 차단", async () => {
+  const owner = `synthetic-method-${crypto.randomUUID()}`;
+  await evidence.savePolicy(owner, { enabled: true, providerId: "vercel-gateway", acknowledgement: "합성 자료로 문항별 제출 허용 범위를 검증합니다.", retentionDays: 30 });
+  const base = definition();
+  const assessment = await assessments.create(owner, { ...base, questions: [
+    { ...base.questions[0], responseMethods: ["photo"] },
+    { ...base.questions[0], id: "q2", responseMethods: ["chat"] },
+  ] });
+  await assessments.setStatus(assessment.id, owner, "published");
+  const { attempt } = await assessments.startAttempt(assessment.shareCode, "합성검증");
+  await assert.rejects(evidence.createChatSession(attempt.id, "q1"), status(409));
+  await assert.rejects(evidence.createAsset(attempt.id, { questionId: "q2", modality: "photo", blobPathname: "synthetic/blocked.png", originalFilename: "blocked.png", mimeType: "image/png", byteSize: 128, sha256: "b".repeat(64), identifiersRemovedConfirmed: true }), status(409));
+  assert.ok((await evidence.createChatSession(attempt.id, "q2")).sessionId);
 });
 
 test("학생 식별 문자열은 외부 전송 직전에 문맥을 보존하며 마스킹한다", () => {

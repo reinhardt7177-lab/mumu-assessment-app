@@ -10,6 +10,7 @@ import type {
   WorkflowRubricRecord,
 } from "../../../db/growth-repository";
 import { requestJson } from "../../../lib/client-api";
+import { evidenceRubrics } from "../../../lib/evidence-rubrics";
 
 const localDateTime = () => {
   const now = new Date();
@@ -27,10 +28,10 @@ type Draft = { criterionId: string; level: Level; excerpt: string; rationale: st
 
 const evidenceTextOf = (evidence?: WorkflowEvidenceRecord | null) => evidence?.originalText ?? evidence?.transformedText ?? "";
 const initialRubric = (workflow: CurriculumWorkflowRecord, evidence?: WorkflowEvidenceRecord | null) => {
+  const available = evidenceRubrics(workflow.rubrics, evidence);
   const existingStandard = evidence?.judgements[0]?.unitStandardId;
-  return workflow.rubrics.find(rubric => rubric.state === "locked" && rubric.unitId === evidence?.unitId && rubric.unitStandardId === existingStandard)
-    ?? workflow.rubrics.find(rubric => rubric.state === "locked" && rubric.unitId === evidence?.unitId)
-    ?? workflow.rubrics.find(rubric => rubric.state === "locked")
+  return available.find(rubric => rubric.unitStandardId === existingStandard)
+    ?? available[0]
     ?? null;
 };
 const draftsFor = (rubric: WorkflowRubricRecord | null, evidence?: WorkflowEvidenceRecord | null): Draft[] => (rubric?.criteria ?? []).map(criterion => {
@@ -71,13 +72,13 @@ export default function AssessmentRecordDialog({
   const [drafts, setDrafts] = useState<Draft[]>(draftsFor(firstRubric, evidence));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const rubric = workflow.rubrics.find(item => item.id === rubricId) ?? null;
-  const lockedRubrics = workflow.rubrics.filter(item => item.state === "locked" && (!evidence || item.unitId === evidence.unitId));
+  const lockedRubrics = evidenceRubrics(workflow.rubrics, evidence);
+  const rubric = lockedRubrics.find(item => item.id === rubricId) ?? null;
   const mediaEvidence = modality === "photo" || modality === "speech";
   useEffect(() => { dialog.current?.showModal(); }, []);
 
   const changeRubric = (nextId: string) => {
-    const next = workflow.rubrics.find(item => item.id === nextId) ?? null;
+    const next = lockedRubrics.find(item => item.id === nextId) ?? null;
     setRubricId(nextId);
     setDrafts(draftsFor(next, evidence));
   };

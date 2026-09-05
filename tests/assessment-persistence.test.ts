@@ -26,6 +26,16 @@ const definition = (): AssessmentDefinition => ({
   methods: ["text"], rubric: [{ name: "근거", high: "구체적인 근거를 들어 정확하게 설명한다.", middle: "근거를 일부 들어 설명한다.", low: "근거를 제시하는 데 도움이 필요하다." }], grading: { upperThreshold: 80, middleThreshold: 50 },
 });
 const owner = () => `teacher-${crypto.randomUUID()}`;
+
+test("문항별 허용 응답을 학생 정의에 보존하고 허용하지 않은 텍스트 제출을 차단", () => {
+  const base = definition();
+  const input = { ...base, methods: ["text", "photo"] as AssessmentDefinition["methods"], questions: [{ ...base.questions[0], responseMethods: ["photo"] }] };
+  const parsed = validateAssessment(input);
+  assert.deepEqual(publicAssessmentDefinition(parsed).questions[0].responseMethods, ["photo"]);
+  assert.throws(() => validateAnswers({ q1: "사진 대신 입력" }, parsed), status(400));
+  assert.throws(() => validateAssessment({ ...input, questions: [{ ...input.questions[0], responseMethods: ["speech"] }] }), status(400));
+  assert.throws(() => validateAssessment({ ...input, questions: [{ ...input.questions[0], responseMethods: ["photo", "photo"] }] }), status(400));
+});
 async function opened() { const teacher = owner(); const a = await repo.create(teacher, definition()); await repo.setStatus(a.id, teacher, "published"); return { teacher, a }; }
 const status = (code: number) => (error: unknown) => error instanceof AppError && error.status === code;
 

@@ -158,7 +158,7 @@ export default function StudentExam({ code }: { code: string }) {
           <StudentEvidenceResponse
             code={code}
             question={question}
-            methods={exam.definition.methods}
+            methods={question.responseMethods ?? exam.definition.methods}
             disabled={!attempt || submitted || busy || exam.status === "closed"}
             textValue={answers[question.id] ?? ""}
             elapsedSeconds={elapsedSeconds}

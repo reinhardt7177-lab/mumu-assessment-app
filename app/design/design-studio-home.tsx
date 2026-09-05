@@ -57,9 +57,9 @@ function flattenPlanChoices(plans: SchoolCurriculumPlanRecord[]) {
 function formFromPlan(choice: PlanChoice): FormState {
   const { plan, template, unit } = choice;
   const learningGoal = unit.assessmentFocus.trim() ||
-    unit.standardCodes.length
+    (unit.standardCodes.length
       ? unit.standardCodes.join(", ") + " 성취기준에 따른 핵심 개념을 이해하고 근거를 들어 설명한다."
-      : unit.title + "의 핵심 내용을 이해하고 수업 맥락에 적용한다.";
+      : unit.title + "의 핵심 내용을 이해하고 수업 맥락에 적용한다.");
   const sourceText = [
     "출처: " + plan.schoolName + " " + plan.schoolYear + "학년도 학습 및 평가 계획",
     "학년·학기·교과: " + template.grade + "학년 " + template.semester + "학기 " + template.subject,

@@ -157,6 +157,35 @@
 .design-question-stack article > header button { border: 0; color: #986358; background: transparent; font-size: 9px; font-weight: 800; cursor: pointer; }
 .design-question-stack .question-prompt { min-height: 98px; resize: vertical; font-size: 13px; font-weight: 750; }
 .design-question-meta { margin: 11px 0; display: grid; grid-template-columns: 1fr 1fr 100px; gap: 9px; }
+.design-response-methods > h2 { color: #173f52; font-size: 20px; font-weight: 800; letter-spacing: -.03em; }
+.design-response-methods > p { color: #61767e; font-size: 14px; line-height: 1.65; }
+.design-response-methods > .design-question-meta { margin: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.design-response-methods > .design-question-meta label { display: grid; gap: 8px; color: #365662; font-size: 13px; font-weight: 700; }
+.design-response-methods > .design-question-meta input { box-sizing: border-box; width: 100%; min-width: 0; height: 48px; padding: 10px 13px; border: 1px solid #c8dcda; border-radius: 10px; background: white; color: #173f52; font-size: 19px; font-weight: 800; }
+.design-response-methods input:focus-visible, .design-response-methods select:focus-visible { outline: 3px solid #a5dfd7; outline-offset: 2px; }
+.design-question-response { margin: 16px 0; padding: 14px; display: flex; flex-wrap: wrap; gap: 10px; border: 1px solid #d8e5e3; border-radius: 12px; background: #fff; }
+.design-question-response legend { padding: 0 5px; color: #345663; font-size: 13px; font-weight: 800; }
+.design-question-response label { min-height: 40px; padding: 8px 12px; display: inline-flex; align-items: center; gap: 8px; border-radius: 9px; background: #f0f7f5; color: #315e62; font-size: 13px; cursor: pointer; }
+.design-question-response input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; accent-color: #168f86; }
+.design-question-response p { flex-basis: 100%; color: #a34d30; font-size: 13px; line-height: 1.5; }
+.design-question-response p button { text-decoration: underline; }
+details.design-response-methods { display: block; }
+details.design-response-methods summary { cursor: pointer; color: #176f69; font-size: 15px; font-weight: 800; }
+details.design-response-methods[open] > p { margin: 16px 0; }
+details.design-response-methods ol { display: grid; gap: 16px; list-style: decimal; padding-left: 24px; }
+details.design-response-methods li h3 { font-size: 16px; line-height: 1.6; font-weight: 700; }
+details.design-response-methods li p { margin: 10px 0; color: #657b81; font-size: 13px; }
+details.design-response-methods textarea { width: 100%; min-height: 100px; padding: 12px; border: 1px solid #c8dcda; border-radius: 10px; background: #fff; }
+.design-editor-shell .design-method-grid button strong { font-size: 14px; word-break: keep-all; overflow-wrap: anywhere; }
+.design-editor-shell .design-method-grid button p { font-size: 12px; line-height: 1.6; word-break: keep-all; overflow-wrap: anywhere; }
+.design-editor-shell .design-method-grid button small { font-size: 10px; }
+@media (max-width: 700px) {
+  .design-response-methods > .design-question-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .design-editor-shell .design-method-grid { grid-template-columns: minmax(0, 1fr); }
+  .design-editor-shell .design-method-grid button { min-height: 110px; grid-template-columns: 34px minmax(0, 1fr) 23px; gap: 10px; }
+  .design-editor-shell .design-editor-actions { position: static; align-items: flex-start; }
+  .design-editor-shell .design-editor-actions > button { min-width: 64px; min-height: 44px; }
+}
 .design-question-stack label > textarea { min-height: 70px; resize: vertical; }
 .design-question-title { display: flex; align-items: center; gap: 9px; }
 .design-question-title strong { padding: 5px 8px; border-radius: 999px; color: #31596a; background: #eaf3f4; font-size: 12px; }
