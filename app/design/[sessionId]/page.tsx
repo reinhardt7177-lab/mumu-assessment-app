@@ -13,5 +13,6 @@ export default async function DesignSessionPage({ params }: { params: Promise<{ 
   try { teacherId = await requireTeacher(); }
   catch (error) { if (error instanceof AppError) redirect(error.status === 401 ? "/sign-in" : "/"); throw error; }
   const session = await getDesignStudioRepository().get((await params).sessionId, teacherId);
-  return <main className="real-workspace"><TeacherHeader active="design" /><DesignStudioEditor initialSession={session} /></main>;
+  const unitTargets = await getDesignStudioRepository().listUnitTargets(teacherId);
+  return <main className="real-workspace"><TeacherHeader active="design" /><DesignStudioEditor initialSession={session} unitTargets={unitTargets} /></main>;
 }

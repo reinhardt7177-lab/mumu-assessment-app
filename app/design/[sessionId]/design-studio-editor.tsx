@@ -2,12 +2,16 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { pendingDesignChanges } from "../../../lib/design-editor-state";
+import { defaultQuestionPlan, type QuestionPlan } from "../../../lib/design-studio-domain";
+import type { AssessmentMethod, CurriculumAssessmentLinkInput } from "../../../lib/assessment-domain";
+import type { DesignUnitTarget } from "../../../db/design-studio-repository";
 import type { AlignmentCandidate, CompetencyUnpack, DesignSessionRecord, QuestionDraft, RubricDraftItem } from "../../../lib/design-studio-domain";
 import { requestFormData } from "../../../lib/client-api";
 
 const steps = [
   ["자료 입력", "수업 맥락"], ["성취기준", "공식 기준 정렬"], ["성공 기준", "관찰할 수행"],
-  ["루브릭", "상·중·하 기준"], ["평가 문항", "증거 수합"], ["타당도", "품질 점검"], ["교사 승인", "평가 초안 생성"],
+  ["루브릭", "상·중·하 기준"], ["문항·응답 방식", "증거 수합 설계"], ["타당도", "품질 점검"], ["교사 승인", "평가 초안 생성"],
 ] as const;
 
 async function callApi<T>(url: string, init: RequestInit = {}) {
@@ -20,19 +24,28 @@ async function callApi<T>(url: string, init: RequestInit = {}) {
 const lines = (value: string) => value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
 const joined = (value: string[]) => value.join("\n");
 
-export default function DesignStudioEditor({ initialSession }: { initialSession: DesignSessionRecord }) {
+export default function DesignStudioEditor({ initialSession, unitTargets = [] }: { initialSession: DesignSessionRecord; unitTargets?: DesignUnitTarget[] }) {
   const [session, setSession] = useState(initialSession);
+  const [savedSession, setSavedSession] = useState(initialSession);
+  const [questionPlan, setQuestionPlan] = useState<QuestionPlan>(initialSession.questionPlan ?? defaultQuestionPlan);
   const [activeStep, setActiveStep] = useState(Math.min(7, Math.max(1, initialSession.currentStep)));
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [unitId, setUnitId] = useState("");
+  const [eventType, setEventType] = useState<CurriculumAssessmentLinkInput["eventType"]>("initial");
+  const [assessmentDate, setAssessmentDate] = useState(() => new Date().toISOString().slice(0, 10));
   const locked = session.status === "approved";
   const selectedStandards = session.standards.filter(item => item.state === "selected");
+  const eligibleUnits = unitTargets.filter(unit => unit.grade === session.grade && unit.subject === session.subject && selectedStandards.every(standard => unit.standardCodes.includes(standard.code)));
+  const curriculumLink: CurriculumAssessmentLinkInput | null = eligibleUnits.some(unit => unit.unitId === unitId) && assessmentDate ? {
+    unitId, eventType, context: session.learningGoal, occurredAt: new Date(`${assessmentDate}T09:00:00+09:00`).toISOString(),
+  } : null;
   const progress = Math.round((session.status === "approved" ? 7 : Math.max(activeStep, session.currentStep)) / 7 * 100);
   const readiness = {
     source: Boolean(session.source?.text.trim()), standards: selectedStandards.length > 0,
     competency: Boolean(session.competency?.successCriteria.length), rubric: Boolean(session.blueprint?.rubric.length),
-    questions: Boolean(session.blueprint?.questions.length), validity: Boolean(session.validity),
+    questions: Boolean(session.blueprint?.questions.length), methods: Boolean(session.blueprint?.methods.length), validity: Boolean(session.validity),
   };
 
   const run = async (label: string, work: () => Promise<void>) => {
@@ -41,15 +54,18 @@ export default function DesignStudioEditor({ initialSession }: { initialSession:
     catch (reason) { setError(reason instanceof Error ? reason.message : "작업을 완료하지 못했습니다."); }
     finally { setBusy(""); }
   };
-  const update = (patch: Partial<DesignSessionRecord>) => setSession(current => ({ ...current, ...patch }));
+  const update = (patch: Partial<DesignSessionRecord>) => setSession(current => ({ ...current, ...patch, status: "draft", validity: null }));
   const save = async (body: unknown, next?: number) => {
-    const result = await callApi<{ session: DesignSessionRecord }>(`/api/teacher/design-sessions/${session.id}`, { method: "PATCH", body: JSON.stringify(body) });
+    const result = await callApi<{ session: DesignSessionRecord }>(`/api/teacher/design-sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ ...pendingDesignChanges(session, savedSession), ...(body as object) }) });
+    setSavedSession(result.session);
     setSession(result.session);
     if (next) setActiveStep(next);
     setNotice("수정 내용이 안전하게 저장되었습니다.");
   };
   const generate = async (path: string, next?: number) => {
-    const result = await callApi<{ session: DesignSessionRecord; generation?: { fallback?: boolean; warning?: string } }>(`/api/teacher/design-sessions/${session.id}/${path}`, { method: "POST", body: "{}" });
+    if (Object.keys(pendingDesignChanges(session, savedSession)).length) await save({});
+    const result = await callApi<{ session: DesignSessionRecord; generation?: { fallback?: boolean; warning?: string } }>(`/api/teacher/design-sessions/${session.id}/${path}`, { method: "POST", body: JSON.stringify(path === "assessment/generate" ? { questionPlan } : {}) });
+    setSavedSession(result.session);
     setSession(result.session);
     if (next) setActiveStep(next);
     setNotice(result.generation?.fallback ? `기본 초안을 만들었습니다. ${result.generation.warning ?? "AI 연결을 확인해 주세요."}` : "AI 초안을 생성하고 이력까지 저장했습니다.");
@@ -57,8 +73,9 @@ export default function DesignStudioEditor({ initialSession }: { initialSession:
 
   const setStandards = (standards: AlignmentCandidate[]) => update({ standards });
   const setCompetency = (competency: CompetencyUnpack) => update({ competency });
-  const setRubric = (rubric: RubricDraftItem[]) => update({ blueprint: { rubric, questions: session.blueprint?.questions ?? [], methods: ["text"], grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
-  const setQuestions = (questions: QuestionDraft[]) => update({ blueprint: { rubric: session.blueprint?.rubric ?? [], questions, methods: ["text"], grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
+  const setRubric = (rubric: RubricDraftItem[]) => update({ blueprint: { rubric, questions: session.blueprint?.questions ?? [], methods: session.blueprint?.methods ?? ["text"], grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
+  const setQuestions = (questions: QuestionDraft[]) => update({ blueprint: { rubric: session.blueprint?.rubric ?? [], questions, methods: session.blueprint?.methods ?? ["text"], grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
+  const setMethods = (methods: AssessmentMethod[]) => update({ blueprint: { rubric: session.blueprint?.rubric ?? [], questions: session.blueprint?.questions ?? [], methods, grading: session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 } } });
 
   return <div className="design-editor-shell">
     <aside className="design-editor-rail">
@@ -74,11 +91,11 @@ export default function DesignStudioEditor({ initialSession }: { initialSession:
     </aside>
 
     <section className="design-editor-main">
-      <header className="design-editor-heading"><div><p className="kicker">STEP {activeStep} · {steps[activeStep - 1][1]}</p><h1>{steps[activeStep - 1][0]}</h1><p>{stepDescription(activeStep)}</p></div><span className={`design-status ${session.status}`}>{locked ? "승인 완료" : session.status === "ready" ? "승인 가능" : "자동 저장형 초안"}</span></header>
+      <header className="design-editor-heading"><div><p className="kicker">STEP {activeStep} · {steps[activeStep - 1][1]}</p><h1>{steps[activeStep - 1][0]}</h1><p>{stepDescription(activeStep)}</p></div><span className={`design-status ${session.status}`}>{locked ? "승인 완료" : Object.keys(pendingDesignChanges(session, savedSession)).length ? "변경 내용 저장 필요" : session.status === "ready" ? "승인 가능" : "저장된 초안"}</span></header>
       {error && <p className="design-error" role="alert">{error}</p>}
       {notice && <p className="design-notice" role="status">{notice}</p>}
 
-      <div className="design-work-card">
+      <fieldset className="design-work-card" disabled={Boolean(busy)} style={{ minWidth: 0, margin: 0 }}>
         {activeStep === 1 && <SourceStep session={session} locked={locked} onChange={update} onUpload={file => run("upload", async () => {
           const form = new FormData(); form.append("file", file);
           const result = await requestFormData<{ source: NonNullable<DesignSessionRecord["source"]> }>(`/api/teacher/design-sessions/${session.id}/sources/preview`, form);
@@ -88,24 +105,38 @@ export default function DesignStudioEditor({ initialSession }: { initialSession:
         {activeStep === 2 && <StandardsStep standards={session.standards} locked={locked} onChange={setStandards} />}
         {activeStep === 3 && <CompetencyStep competency={session.competency} locked={locked} onChange={setCompetency} standards={selectedStandards} />}
         {activeStep === 4 && <RubricStep rubric={session.blueprint?.rubric ?? []} locked={locked} onChange={setRubric} />}
-        {activeStep === 5 && <QuestionsStep questions={session.blueprint?.questions ?? []} rubric={session.blueprint?.rubric ?? []} standards={selectedStandards} locked={locked} onChange={setQuestions} />}
-        {activeStep === 6 && <ValidityStep validity={session.validity} />}
-        {activeStep === 7 && <ApprovalStep session={session} readiness={readiness} />}
-      </div>
+        {activeStep === 5 && <div className="design-question-stage">
+          <section className="design-response-methods"><h2>어떤 문항을 몇 개 만들까요?</h2><p>전체 1~20문항 · 생성 전에 유형별 개수를 지정하세요.</p><div className="design-question-meta">{questionKindOptions.map(option => <label key={option.value}><span>{option.label}</span><input type="number" min={0} max={20} disabled={locked} value={questionPlan[option.value]} onChange={event => setQuestionPlan(current => ({ ...current, [option.value]: Number(event.target.value) }))} /></label>)}</div><strong>총 {Object.values(questionPlan).reduce((sum, count) => sum + count, 0)}문항</strong></section>
+          <ResponseMethodsStep methods={session.blueprint?.methods ?? ["text"]} locked={locked} onChange={setMethods} />
+          <QuestionsStep questions={session.blueprint?.questions ?? []} rubric={session.blueprint?.rubric ?? []} standards={selectedStandards} methods={session.blueprint?.methods ?? ["text"]} locked={locked} onChange={setQuestions} />
+          {!!session.blueprint?.questions.length && <details className="design-response-methods"><summary>학생 시험지 미리보기 · 정답 제외</summary><p>설정 확인용 미리보기입니다. 입력·녹화·제출 기능은 배포된 학생 시험지에서 동작합니다.</p><ol>{session.blueprint.questions.map(question => <li key={question.id}><h3>{question.prompt}</h3>{question.kind === "선택형" && <ul>{question.choices?.map((choice, index) => <li key={index}>{index + 1}. {choice}</li>)}</ul>}<p>응답: {(question.responseMethods ?? session.blueprint!.methods).map(method => responseMethodOptions.find(option => option.id === method)?.title).join(" · ")}</p>{(question.responseMethods ?? session.blueprint!.methods).includes("text") && question.kind !== "선택형" && <textarea readOnly aria-label="답안 입력 영역 미리보기" placeholder={question.kind === "단답형" ? "짧은 답을 입력하세요." : "답안과 근거를 입력하세요."} />}</li>)}</ol></details>}
+        </div>}
+        {activeStep === 6 && <ValidityStep validity={session.validity} methods={session.blueprint?.methods ?? ["text"]} onEdit={() => setActiveStep(5)} />}
+        {activeStep === 7 && <><ApprovalStep session={session} readiness={readiness} />{!locked && <section className="design-response-methods">
+          <h3>어느 학급·단원의 성장 기록에 연결할까요?</h3>
+          <p>승인한 루브릭과 평가를 이 단원에 함께 저장합니다. 학생 제출은 해당 학기의 성장 증거로 수합됩니다.</p>
+          {eligibleUnits.length ? <div className="design-create-grid">
+            <label className="full"><span>학급 · 학기 · 단원</span><select value={unitId} onChange={event => setUnitId(event.target.value)}><option value="">연결할 단원 선택</option>{eligibleUnits.map(unit => <option key={unit.unitId} value={unit.unitId}>{unit.label}</option>)}</select></label>
+            <label><span>평가 구분</span><select value={eventType} onChange={event => setEventType(event.target.value as typeof eventType)}><option value="initial">최초 평가</option><option value="formative">형성 평가</option><option value="reassessment">재평가</option></select></label>
+            <label><span>평가일</span><input type="date" value={assessmentDate} onChange={event => setAssessmentDate(event.target.value)} /></label>
+          </div> : <p>선택한 성취기준을 포함하는 학급 단원이 없습니다. <Link href="/curriculum">교육과정 운영실에서 단원을 준비해 주세요 →</Link></p>}
+        </section>}</>}
+      </fieldset>
 
       <footer className="design-editor-actions">
         <button className="outline-button" type="button" disabled={activeStep === 1 || Boolean(busy)} onClick={() => setActiveStep(step => Math.max(1, step - 1))}>이전</button>
-        <div>{stepAction(activeStep, { session, locked, busy, readiness, run, save, generate, setActiveStep, setSession, setNotice })}</div>
+        <div>{stepAction(activeStep, { session, locked, busy, readiness, run, save, generate, setActiveStep, setSession, setNotice, curriculumLink })}</div>
       </footer>
     </section>
   </div>;
 }
 
 function stepDescription(step: number) {
-  return ["수업안·교육과정·차시 맥락을 평가 설계의 근거로 저장합니다.", "공식 2022 개정 초등 교육과정에서 실제로 평가할 기준을 고릅니다.", "성취기준을 학생 답안에서 관찰할 수 있는 작은 성공 기준으로 풉니다.", "점수표가 아니라 수행의 질적 차이가 드러나는 상·중·하 기준을 만듭니다.", "각 문항이 어떤 성취기준과 루브릭 증거를 수합하는지 연결합니다.", "구인 타당도·채점 신뢰도·공정성 위협을 배포 전에 점검합니다.", "전체 연결을 확인하고 기존 평가 보관함에 승인된 초안을 만듭니다."][step - 1];
+  return ["수업안·교육과정·차시 맥락을 평가 설계의 근거로 저장합니다.", "공식 2022 개정 초등 교육과정에서 실제로 평가할 기준을 고릅니다.", "성취기준을 학생 답안에서 관찰할 수 있는 작은 성공 기준으로 풉니다.", "점수표가 아니라 수행의 질적 차이가 드러나는 상·중·하 기준을 만듭니다.", "문항을 만든 뒤 학생이 글·시험지 사진·말하기·챗봇·화면 녹화 중 어떤 방식으로 답할지 선택합니다.", "구인 타당도·채점 신뢰도·공정성 위협을 배포 전에 점검합니다.", "전체 연결을 확인하고 기존 평가 보관함에 승인된 초안을 만듭니다."][step - 1];
 }
 
 type ActionContext = {
+  curriculumLink: CurriculumAssessmentLinkInput | null;
   session: DesignSessionRecord; locked: boolean; busy: string; readiness: Record<string, boolean>;
   run: (label: string, work: () => Promise<void>) => Promise<void>;
   save: (body: unknown, next?: number) => Promise<void>;
@@ -122,11 +153,11 @@ function stepAction(step: number, context: ActionContext) {
   if (step === 2) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy)} onClick={() => run("suggest", () => generate("standards/suggest"))}>성취기준 추천</button><button className="primary-button" disabled={Boolean(busy) || !readiness.standards} onClick={() => run("save-standards", () => save({ standards: session.standards, currentStep: 3 }, 3))}>선택 저장하고 다음 →</button></div>;
   if (step === 3) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.standards} onClick={() => run("competency", () => generate("competency/unpack"))}>AI 성공 기준 초안</button><button className="primary-button" disabled={Boolean(busy) || !session.competency} onClick={() => run("save-competency", () => save({ competency: session.competency, currentStep: 4 }, 4))}>수정본 저장하고 다음 →</button></div>;
   if (step === 4) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.competency} onClick={() => run("rubric", () => generate("rubric/generate"))}>AI 루브릭 초안</button><button className="primary-button" disabled={Boolean(busy) || !readiness.rubric} onClick={() => run("save-rubric", () => save({ rubric: session.blueprint?.rubric, currentStep: 5 }, 5))}>루브릭 저장하고 다음 →</button></div>;
-  if (step === 5) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.rubric} onClick={() => run("questions", () => generate("assessment/generate"))}>AI 평가 문항 초안</button><button className="primary-button" disabled={Boolean(busy) || !readiness.questions} onClick={() => run("save-questions", () => save({ questions: session.blueprint?.questions, currentStep: 6 }, 6))}>문항 저장하고 점검 →</button></div>;
+  if (step === 5) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.rubric} onClick={() => run("questions", () => generate("assessment/generate"))}>AI 평가 문항 초안</button><button className="primary-button" disabled={Boolean(busy) || !readiness.questions || !readiness.methods} onClick={() => run("save-questions", () => save({ questions: session.blueprint?.questions, methods: session.blueprint?.methods, currentStep: 6 }, 6))}>문항·응답 방식 저장하고 점검 →</button></div>;
   if (step === 6) return <div className="design-dual-actions"><button className="outline-button" disabled={Boolean(busy) || !readiness.questions} onClick={() => run("audit", () => generate("validity/audit"))}>타당도 다시 점검</button><button className="primary-button" disabled={Boolean(busy) || !session.validity || session.validity.blocked} onClick={() => context.setActiveStep(7)}>승인 단계로 →</button></div>;
-  return <button className="primary-button design-approve-button" disabled={Boolean(busy) || !session.validity || session.validity.blocked} onClick={() => run("approve", async () => {
-    const result = await callApi<{ session: DesignSessionRecord }>(`/api/teacher/design-sessions/${session.id}/approve`, { method: "POST", body: "{}" });
-    setSession(result.session); setNotice("교사 승인본이 평가 보관함에 생성되었습니다. 이제 학급에 배포할 수 있습니다.");
+  return <button className="primary-button design-approve-button" disabled={Boolean(busy) || !session.validity || session.validity.blocked || !context.curriculumLink} onClick={() => run("approve", async () => {
+    const result = await callApi<{ session: DesignSessionRecord }>(`/api/teacher/design-sessions/${session.id}/approve`, { method: "POST", body: JSON.stringify(context.curriculumLink) });
+    setSession(result.session); setNotice("평가와 루브릭이 학급 단원에 연결되었습니다. QR 배포 후 답안이 성장 기록으로 수합됩니다.");
   })}>{busy ? "승인본 생성 중…" : "✓ 교사 승인하고 평가 만들기"}</button>;
 }
 
@@ -162,20 +193,90 @@ function RubricStep({ rubric, locked, onChange }: { rubric: RubricDraftItem[]; l
   return <div className="design-rubric-stack">{rubric.map((item, index) => <article key={item.id}><header><div><span>기준 {index + 1}</span><input disabled={locked} value={item.name} onChange={event => update(index, { name: event.target.value })} /></div><b>{item.standardCode}</b></header><textarea className="rubric-description" disabled={locked} value={item.description} onChange={event => update(index, { description: event.target.value })} /><div className="design-rubric-levels"><label className="high"><span>상 · 독립적 성취</span><textarea disabled={locked} value={item.high} onChange={event => update(index, { high: event.target.value })} /></label><label className="middle"><span>중 · 부분 성취</span><textarea disabled={locked} value={item.middle} onChange={event => update(index, { middle: event.target.value })} /></label><label className="low"><span>하 · 지원 필요</span><textarea disabled={locked} value={item.low} onChange={event => update(index, { low: event.target.value })} /></label></div></article>)}</div>;
 }
 
-function QuestionsStep({ questions, rubric, standards, locked, onChange }: { questions: QuestionDraft[]; rubric: RubricDraftItem[]; standards: AlignmentCandidate[]; locked: boolean; onChange: (value: QuestionDraft[]) => void }) {
-  if (!questions.length) return <div className="design-empty-stage"><span>05</span><h2>평가 문항을 생성할 차례입니다.</h2><p>각 문항은 하나의 성취기준과 루브릭 기준에 연결되고, 학생이 보여야 할 증거까지 함께 저장됩니다.</p></div>;
-  const update = (index: number, patch: Partial<QuestionDraft>) => onChange(questions.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
-  return <div className="design-question-stack">{questions.map((item, index) => <article key={item.id}><header><span>문항 {index + 1}</span><button type="button" disabled={locked || questions.length === 1} onClick={() => onChange(questions.filter((_, i) => i !== index))}>삭제</button></header><textarea className="question-prompt" disabled={locked} value={item.prompt} onChange={event => update(index, { prompt: event.target.value })} /><div className="design-question-meta"><label><span>성취기준</span><select disabled={locked} value={item.standardCode} onChange={event => { const nextCode = event.target.value; const nextCriterion = rubric.find(r => r.standardCode === nextCode)?.name ?? item.criterion; update(index, { standardCode: nextCode, criterion: nextCriterion }); }}>{standards.map(standard => <option key={standard.code}>{standard.code}</option>)}</select></label><label><span>루브릭 기준</span><select disabled={locked} value={item.criterion} onChange={event => update(index, { criterion: event.target.value })}>{rubric.filter(r => r.standardCode === item.standardCode).map(r => <option key={r.id}>{r.name}</option>)}</select></label><label><span>배점</span><input disabled={locked} type="number" min="1" max="100" value={item.points} onChange={event => update(index, { points: Number(event.target.value) })} /></label></div><label><span>기대 증거</span><textarea disabled={locked} value={item.evidenceExpected} onChange={event => update(index, { evidenceExpected: event.target.value })} /></label></article>)}</div>;
+const responseMethodOptions: Array<{ id: AssessmentMethod; icon: string; title: string; description: string; badge: string }> = [
+  { id: "text", icon: "✎", title: "온라인 답안", description: "객관식·단답형·서술형에 화면에서 직접 응답", badge: "기본" },
+  { id: "photo", icon: "▣", title: "종이 시험지·OCR", description: "손글씨 답안 사진을 글자로 변환해 확인", badge: "OCR" },
+  { id: "speech", icon: "●", title: "오럴 테스트", description: "학생 음성을 녹음하고 전사해 평가", badge: "전사" },
+  { id: "chat", icon: "⌁", title: "평가 챗봇", description: "대화 기록·학습시간·도움 수준을 함께 분석", badge: "대화" },
+  { id: "screen", icon: "▱", title: "화면 녹화", description: "디지털 수행 과정을 최대 30초 영상으로 수합", badge: "베타" },
+];
+
+function ResponseMethodsStep({ methods, locked, onChange }: { methods: AssessmentMethod[]; locked: boolean; onChange: (value: AssessmentMethod[]) => void }) {
+  const toggle = (method: AssessmentMethod) => {
+    if (locked) return;
+    const selected = methods.includes(method);
+    if (selected && methods.length === 1) return;
+    onChange(selected ? methods.filter(item => item !== method) : responseMethodOptions.map(item => item.id).filter(item => [...methods, method].includes(item)));
+  };
+  return <section className="design-response-methods" aria-labelledby="response-method-title">
+    <header><div><p className="kicker">RESPONSE & EVIDENCE</p><h2 id="response-method-title">학생은 어떤 방식으로 답하나요?</h2><p>한 가지 이상 선택하세요. 여러 방식을 선택하면 학생 시험지에 선택한 응답 탭만 표시됩니다.</p></div><strong>{methods.length}개 선택</strong></header>
+    <div className="design-method-grid" role="group" aria-label="학생 응답 및 평가 증거 수집 방식">
+      {responseMethodOptions.map(option => {
+        const selected = methods.includes(option.id);
+        return <button type="button" key={option.id} aria-pressed={selected} disabled={locked} className={selected ? "selected" : ""} onClick={() => toggle(option.id)}>
+          <span>{option.icon}</span><div><small>{option.badge}</small><strong>{option.title}</strong><p>{option.description}</p></div><b>{selected ? "✓" : "+"}</b>
+        </button>;
+      })}
+    </div>
+    <p className="design-method-note"><b>개인정보 보호:</b> 사진·음성·화면 녹화는 이름·번호를 제외하고 학교 승인 설정이 켜진 경우에만 비공개 저장소와 선택한 AI 제공자를 사용합니다. 화면 녹화는 원본을 교사가 직접 검토하며 자동 성취 판단에는 단독 사용하지 않습니다.</p>
+  </section>;
 }
 
-function ValidityStep({ validity }: { validity: DesignSessionRecord["validity"] }) {
-  if (!validity) return <div className="design-empty-stage"><span>06</span><h2>배포 전 품질 점검이 필요합니다.</h2><p>문항이 실제 학습 목표를 측정하는지, 다른 능력 때문에 결과가 왜곡되지 않는지 확인합니다.</p></div>;
-  return <div className="design-audit"><header className={validity.blocked ? "blocked" : "passed"}><span>{validity.blocked ? "!" : "✓"}</span><div><small>종합 판단</small><h2>{validity.overall}</h2><p>{validity.blocked ? "중대한 경고를 수정한 뒤 다시 점검해야 승인할 수 있습니다." : "교사 검토 후 승인 단계로 이동할 수 있습니다."}</p></div></header><div className="design-audit-grid"><article><span>구인 타당도</span><p>{validity.constructValidity}</p></article><article><span>채점 신뢰도</span><p>{validity.reliability}</p></article><article><span>결과 타당도</span><p>{validity.consequentialValidity}</p></article></div>{validity.threats.length > 0 && <div className="design-threat-list"><h3>확인할 위험 요소</h3>{validity.threats.map((threat, index) => <article key={`${threat.issue}-${index}`}><b className={threat.severity}>{threat.severity === "major" ? "중대" : threat.severity === "moderate" ? "보통" : "경미"}</b><div><strong>{threat.issue}</strong><p>{threat.recommendation}</p></div></article>)}</div>}</div>;
+const questionKindOptions: Array<{ value: QuestionDraft["kind"]; label: string; description: string }> = [
+  { value: "선택형", label: "객관식(선택형)", description: "보기 중 하나 선택 · 정답 1개" },
+  { value: "단답형", label: "단답형", description: "짧은 낱말·문장 · 인정 답안 설정" },
+  { value: "서술형", label: "서술형", description: "생각·근거·과정을 글로 표현" },
+  { value: "말하기", label: "말하기", description: "음성으로 설명 · 오럴 테스트 필요" },
+];
+
+function QuestionsStep({ questions, rubric, standards, methods, locked, onChange }: { questions: QuestionDraft[]; rubric: RubricDraftItem[]; standards: AlignmentCandidate[]; methods: AssessmentMethod[]; locked: boolean; onChange: (value: QuestionDraft[]) => void }) {
+  if (!questions.length) { const standardCode = standards[0]?.code ?? rubric[0]?.standardCode ?? ""; const criterion = rubric.find(item => item.standardCode === standardCode) ?? rubric[0]; return <div className="design-empty-stage"><span>05</span><h2>평가 문항을 생성할 차례입니다.</h2><p>AI 초안을 만들거나 문항을 직접 추가한 뒤 객관식·단답형·서술형·말하기 중 알맞은 유형을 고르세요.</p>{!locked && <button type="button" className="design-add-question" onClick={() => onChange([{ id: crypto.randomUUID(), prompt: "학생에게 제시할 문항을 입력하세요.", kind: "서술형", standardCode, criterion: criterion?.name ?? "평가 기준", points: 10, evidenceExpected: criterion?.description ?? "학생의 답안에서 관찰할 증거를 입력하세요.", choices: [], answerKey: [] }])}>＋ 문항 직접 추가</button>}</div>; }
+  const update = (index: number, patch: Partial<QuestionDraft>) => onChange(questions.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+  const changeKind = (index: number, kind: QuestionDraft["kind"]) => {
+    const item = questions[index];
+    if (kind === "선택형") {
+      const choices = (item.choices ?? []).length >= 2 ? item.choices! : ["보기 1", "보기 2", "보기 3", "보기 4"];
+      const answerKey = item.answerKey?.[0] && choices.includes(item.answerKey[0]) ? [item.answerKey[0]] : [choices[0]];
+      update(index, { kind, choices, answerKey });
+      return;
+    }
+    update(index, { kind, choices: [], answerKey: kind === "단답형" ? (item.kind === "단답형" ? item.answerKey ?? [] : []) : [], responseMethods: kind === "말하기" && methods.includes("speech") ? ["speech"] : item.responseMethods });
+  };
+  const addQuestion = () => {
+    const standardCode = standards[0]?.code ?? rubric[0]?.standardCode ?? "";
+    const criterion = rubric.find(item => item.standardCode === standardCode) ?? rubric[0];
+    onChange([...questions, {
+      id: crypto.randomUUID(), prompt: "학생에게 제시할 문항을 입력하세요.", kind: "서술형",
+      standardCode, criterion: criterion?.name ?? "평가 기준", points: 10,
+      evidenceExpected: criterion?.description ?? "학생의 답안에서 관찰할 증거를 입력하세요.",
+      choices: [], answerKey: [],
+    }]);
+  };
+  return <div className="design-question-stack">{questions.map((item, index) => {
+    const choices = item.choices ?? [];
+    return <article key={item.id}>
+      <header><div className="design-question-title"><span>문항 {index + 1}</span><strong>{questionKindOptions.find(option => option.value === item.kind)?.label ?? item.kind}</strong></div><button type="button" disabled={locked || questions.length === 1} onClick={() => onChange(questions.filter((_, i) => i !== index))}>삭제</button></header>
+      <div className="design-question-type"><label><span>문항 유형</span><select disabled={locked} value={item.kind} onChange={event => changeKind(index, event.target.value as QuestionDraft["kind"])}>{questionKindOptions.map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><p>{questionKindOptions.find(option => option.value === item.kind)?.description}</p></div>
+      <label><span>학생에게 보여 줄 문항</span><textarea className="question-prompt" disabled={locked} value={item.prompt} onChange={event => update(index, { prompt: event.target.value })} /></label>
+      <fieldset className="design-question-response"><legend>이 문항의 답안 제출 방식</legend>{methods.map(method => { const selected = item.responseMethods ?? methods; return <label key={method}><input type="checkbox" disabled={locked || (selected.includes(method) && selected.length === 1)} checked={selected.includes(method)} onChange={() => update(index, { responseMethods: selected.includes(method) ? selected.filter(value => value !== method) : [...selected, method] })} />{responseMethodOptions.find(option => option.id === method)?.title}</label>; })}{item.responseMethods?.some(method => !methods.includes(method)) && <p role="alert">평가 전체에서 해제한 응답 방식이 남아 있습니다. 이 문항의 방식을 다시 지정해 주세요. <button type="button" disabled={locked} onClick={() => update(index, { responseMethods: methods })}>현재 허용 방식 적용</button></p>}</fieldset>
+      {item.kind === "선택형" && <fieldset className="design-choice-editor"><legend>보기와 정답</legend><p>왼쪽 원을 눌러 정답을 지정하세요. 정답 정보는 학생 시험지에 전송되지 않습니다.</p>{choices.map((choice, choiceIndex) => <div key={choiceIndex}><input type="radio" name={`correct-${item.id}`} aria-label={`${choiceIndex + 1}번 보기를 정답으로 지정`} checked={item.answerKey?.[0] === choice} disabled={locked} onChange={() => update(index, { answerKey: [choice] })} /><span>{choiceIndex + 1}</span><input value={choice} maxLength={300} disabled={locked} aria-label={`${choiceIndex + 1}번 보기`} onChange={event => { const nextChoices = choices.map((value, i) => i === choiceIndex ? event.target.value : value); update(index, { choices: nextChoices, answerKey: item.answerKey?.[0] === choice ? [event.target.value] : item.answerKey }); }} /><button type="button" disabled={locked || choices.length <= 2} aria-label={`${choiceIndex + 1}번 보기 삭제`} onClick={() => { const nextChoices = choices.filter((_, i) => i !== choiceIndex); update(index, { choices: nextChoices, answerKey: item.answerKey?.[0] === choice ? [] : item.answerKey }); }}>삭제</button></div>)}<button type="button" className="design-add-choice" disabled={locked || choices.length >= 8} onClick={() => update(index, { choices: [...choices, `보기 ${choices.length + 1}`] })}>＋ 보기 추가</button></fieldset>}
+      {item.kind === "단답형" && <label className="design-answer-key"><span>인정할 정답 · 한 줄에 하나</span><textarea disabled={locked} value={joined(item.answerKey ?? [])} onChange={event => update(index, { answerKey: lines(event.target.value), choices: [] })} placeholder={"예: 민주주의\n민주 주의"} /><small>띄어쓰기·표기 차이 등 실제로 정답 처리할 표현만 입력하세요.</small></label>}
+      {(item.kind === "서술형" || item.kind === "말하기") && <p className="design-open-response-note">{item.kind === "말하기" ? "오럴 테스트 응답 방식을 함께 선택해야 실제 음성을 수합할 수 있습니다." : "정답 하나로 자동 채점하지 않고 아래 기대 증거와 루브릭으로 판단합니다."}</p>}
+      <div className="design-question-meta"><label><span>성취기준</span><select disabled={locked} value={item.standardCode} onChange={event => { const nextCode = event.target.value; const nextCriterion = rubric.find(r => r.standardCode === nextCode)?.name ?? item.criterion; update(index, { standardCode: nextCode, criterion: nextCriterion }); }}>{standards.map(standard => <option key={standard.code}>{standard.code}</option>)}</select></label><label><span>루브릭 기준</span><select disabled={locked} value={item.criterion} onChange={event => update(index, { criterion: event.target.value })}>{rubric.filter(r => r.standardCode === item.standardCode).map(r => <option key={r.id}>{r.name}</option>)}</select></label><label><span>배점</span><input disabled={locked} type="number" min="1" max="100" value={item.points} onChange={event => update(index, { points: Number(event.target.value) })} /></label></div>
+      <label><span>기대 증거·채점 관점</span><textarea disabled={locked} value={item.evidenceExpected} onChange={event => update(index, { evidenceExpected: event.target.value })} /></label>
+    </article>;
+  })}{!locked && <button type="button" className="design-add-question" disabled={questions.length >= 20} onClick={addQuestion}>＋ 문항 직접 추가</button>}</div>;
+}
+
+function ValidityStep({ validity, methods, onEdit }: { validity: DesignSessionRecord["validity"]; methods: AssessmentMethod[]; onEdit: () => void }) {
+  const methodSummary = <section className="design-audit-methods"><header><div><small>학생 응답·증거 수합 방식</small><strong>{methods.length}개 선택됨</strong></div><button type="button" onClick={onEdit}>방식 변경</button></header><div>{methods.map(method => { const option = responseMethodOptions.find(item => item.id === method); return option ? <span key={method}>{option.icon} {option.title}</span> : null; })}</div></section>;
+  if (!validity) return <div className="design-validity-pending">{methodSummary}<div className="design-empty-stage"><span>06</span><h2>배포 전 품질 점검이 필요합니다.</h2><p>문항이 실제 학습 목표를 측정하는지, 선택한 응답 방식이 학생의 성취를 왜곡하지 않는지 확인합니다.</p></div></div>;
+  return <div className="design-audit">{methodSummary}<header className={validity.blocked ? "blocked" : "passed"}><span>{validity.blocked ? "!" : "✓"}</span><div><small>종합 판단</small><h2>{validity.overall}</h2><p>{validity.blocked ? "중대한 경고를 수정한 뒤 다시 점검해야 승인할 수 있습니다." : "교사 검토 후 승인 단계로 이동할 수 있습니다."}</p></div></header><div className="design-audit-grid"><article><span>구인 타당도</span><p>{validity.constructValidity}</p></article><article><span>채점 신뢰도</span><p>{validity.reliability}</p></article><article><span>결과 타당도</span><p>{validity.consequentialValidity}</p></article></div>{validity.threats.length > 0 && <div className="design-threat-list"><h3>확인할 위험 요소</h3>{validity.threats.map((threat, index) => <article key={`${threat.issue}-${index}`}><b className={threat.severity}>{threat.severity === "major" ? "중대" : threat.severity === "moderate" ? "보통" : "경미"}</b><div><strong>{threat.issue}</strong><p>{threat.recommendation}</p></div></article>)}</div>}</div>;
 }
 
 function ApprovalStep({ session, readiness }: { session: DesignSessionRecord; readiness: Record<string, boolean> }) {
-  const checks = [["수업자료", readiness.source], ["성취기준", readiness.standards], ["성공 기준", readiness.competency], ["루브릭", readiness.rubric], ["평가 문항", readiness.questions], ["타당도 점검", readiness.validity && !session.validity?.blocked]] as const;
-  return <div className="design-approval"><div className="design-approval-mark">{session.status === "approved" ? "✓" : "M"}</div><h2>{session.status === "approved" ? "평가 초안이 생성되었습니다." : "선생님의 최종 승인을 기다립니다."}</h2><p>승인하면 현재 설계가 기존 평가 보관함에 초안으로 생성됩니다. 이후 학급을 선택하고 QR·링크로 배포할 수 있습니다.</p><div className="design-approval-checks">{checks.map(([label, ready]) => <span className={ready ? "ready" : ""} key={label}><b>{ready ? "✓" : "·"}</b>{label}</span>)}</div><div className="design-approval-summary"><span>{session.grade}학년 {session.subject}</span><strong>{session.title}</strong><p>{session.learningGoal}</p><small>{selectedCount(session)}개 성취기준 · {session.blueprint?.rubric.length ?? 0}개 루브릭 기준 · {session.blueprint?.questions.length ?? 0}문항</small></div></div>;
+  const checks = [["수업자료", readiness.source], ["성취기준", readiness.standards], ["성공 기준", readiness.competency], ["루브릭", readiness.rubric], ["평가 문항", readiness.questions], ["응답 방식", readiness.methods], ["타당도 점검", readiness.validity && !session.validity?.blocked]] as const;
+  return <div className="design-approval"><div className="design-approval-mark">{session.status === "approved" ? "✓" : "M"}</div><h2>{session.status === "approved" ? "평가 초안이 생성되었습니다." : "선생님의 최종 승인을 기다립니다."}</h2><p>승인하면 현재 설계가 기존 평가 보관함에 초안으로 생성됩니다. 이후 학급을 선택하고 QR·링크로 배포할 수 있습니다.</p><div className="design-approval-checks">{checks.map(([label, ready]) => <span className={ready ? "ready" : ""} key={label}><b>{ready ? "✓" : "·"}</b>{label}</span>)}</div><div className="design-approval-summary"><span>{session.grade}학년 {session.subject}</span><strong>{session.title}</strong><p>{session.learningGoal}</p><small>{selectedCount(session)}개 성취기준 · {session.blueprint?.rubric.length ?? 0}개 루브릭 기준 · {session.blueprint?.questions.length ?? 0}문항 · {session.blueprint?.methods.length ?? 0}개 응답 방식</small></div></div>;
 }
 
 const selectedCount = (session: DesignSessionRecord) => session.standards.filter(item => item.state === "selected").length;

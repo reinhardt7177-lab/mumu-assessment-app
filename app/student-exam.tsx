@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Answers, AssessmentDefinition, AttemptRecord, ReviewRecord } from "../lib/assessment-domain";
+import type { Answers, AttemptRecord, ReviewRecord, StudentAssessmentDefinition } from "../lib/assessment-domain";
 import { requestJson, RequestError } from "../lib/client-api";
 import type { ResponseEvidenceRecord, StudentEvidencePayload } from "../lib/evidence-domain";
 import StudentEvidenceResponse, { responseIsComplete } from "./student-evidence-response";
@@ -9,7 +9,7 @@ import StudentEvidenceResponse, { responseIsComplete } from "./student-evidence-
 type Exam = {
   id: string;
   status: "published" | "closed";
-  definition: AssessmentDefinition;
+  definition: StudentAssessmentDefinition;
   rosterRequired: boolean;
   distribution: {
     id: string; classId: string; className: string; schoolYear: number; grade: number;
@@ -158,7 +158,7 @@ export default function StudentExam({ code }: { code: string }) {
           <StudentEvidenceResponse
             code={code}
             question={question}
-            methods={exam.definition.methods}
+            methods={question.responseMethods ?? exam.definition.methods}
             disabled={!attempt || submitted || busy || exam.status === "closed"}
             textValue={answers[question.id] ?? ""}
             elapsedSeconds={elapsedSeconds}

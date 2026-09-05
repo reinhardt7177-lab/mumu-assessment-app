@@ -5,7 +5,7 @@ import type { AssessmentQuestion } from "../lib/assessment-domain";
 import { requestJson } from "../lib/client-api";
 import type { EvidenceDerivationRecord, ResponseEvidenceRecord } from "../lib/evidence-domain";
 
-const modalityName = { photo: "손글씨 사진", speech: "말하기 녹음", chat: "챗봇 대화" };
+const modalityName = { photo: "손글씨 사진", speech: "말하기 녹음", chat: "챗봇 대화", screen: "화면 녹화" };
 const helpName = { none: "도움 없음", prompt: "질문 촉진", step_hint: "단계 힌트", example: "다른 맥락 예시" };
 
 function captionTrack(text?: string | null) {
@@ -27,11 +27,11 @@ export default function TeacherAttemptEvidence({ attemptId, questions }: { attem
     return () => controller.abort();
   }, [attemptId]);
 
-  if (loading) return <p className="save-notice" role="status">사진·음성·챗봇 응답을 불러오는 중…</p>;
+  if (loading) return <p className="save-notice" role="status">사진·음성·챗봇·화면 녹화 응답을 불러오는 중…</p>;
   if (error) return <p className="ai-generation-error" role="alert">{error}</p>;
   if (!responses.length) return null;
   return <section className="teacher-multimodal-review">
-    <header><div><p className="kicker">MULTIMODAL EVIDENCE</p><h3>사진·음성·챗봇 응답</h3></div><span>자동 변환 ≠ 학생 성취</span></header>
+    <header><div><p className="kicker">MULTIMODAL EVIDENCE</p><h3>사진·음성·챗봇·화면 녹화 응답</h3></div><span>자동 변환 ≠ 학생 성취</span></header>
     <p>원본과 변환본을 대조해 주세요. OCR·전사 오류를 수정하고 확인한 뒤에만 루브릭 AI 추천에 사용할 수 있습니다.</p>
     {questions.map((question, index) => {
       const items = responses.filter(item => item.questionId === question.id);
@@ -73,7 +73,7 @@ function MediaEvidence({ attemptId, response, onChange }: { attemptId: string; r
     } catch (failure) { setError(failure instanceof Error ? failure.message : "확인본을 저장하지 못했습니다."); }
     finally { setBusy(false); }
   };
-  return <div className="teacher-evidence-item"><header><strong>{modalityName[response.modality as "photo" | "speech"]}</strong><small>{response.assistanceLevel === "independent" ? "독립 수행" : `도움 수준 · ${response.assistanceLevel}`}</small></header>
+  return <div className="teacher-evidence-item"><header><strong>{modalityName[response.modality]}</strong><small>{response.assistanceLevel === "independent" ? "독립 수행" : `도움 수준 · ${response.assistanceLevel}`}</small></header>
     <div className="teacher-evidence-original">
       {asset && response.modality === "photo" ? <>
         {/* Private assets require the teacher's authenticated cookie, so the browser must load the source directly. */}
@@ -81,11 +81,14 @@ function MediaEvidence({ attemptId, response, onChange }: { attemptId: string; r
         <img src={`/api/teacher/evidence-assets/${asset.id}`} alt="학생 손글씨 답안 원본" />
       </> : null}
       {asset && response.modality === "speech" ? <audio controls src={`/api/teacher/evidence-assets/${asset.id}`}><track kind="captions" src={captionTrack(latest?.extractedText)} srcLang="ko" label="한국어 전사" default />음성 원본을 재생할 수 없습니다.</audio> : null}
+      {asset && response.modality === "screen" ? <video controls src={`/api/teacher/evidence-assets/${asset.id}`}><track kind="captions" src={captionTrack("화면 녹화에는 음성이 없습니다.")} srcLang="ko" label="음성 없음" default />화면 녹화를 재생할 수 없습니다.</video> : null}
     </div>
-    <label>OCR·전사 확인본<textarea value={text} maxLength={50000} disabled={busy} onChange={event => setText(event.target.value)} /></label>
-    {latest?.confidence != null && <p className="teacher-confidence">자동 변환 신뢰도 참고값 {Math.round(latest.confidence * 100)}% · 점수나 수준으로 사용하지 않음</p>}
-    <label>확인·수정 이유<input value={reason} maxLength={1000} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
-    <button type="button" className="outline-button" disabled={busy || !text.trim() || reason.trim().length < 5} onClick={() => void save()}>{busy ? "저장 중…" : latest?.kind === "teacher_correction" ? "확인본 새 버전 저장" : "원본 대조 완료·확인본 저장"}</button>
+    {response.modality === "screen" ? <p className="teacher-screen-review-note">화면 녹화는 학생의 디지털 수행 과정을 교사가 직접 관찰하는 증거입니다. 영상만으로 AI가 성취 수준을 자동 확정하지 않습니다.</p> : <>
+      <label>OCR·전사 확인본<textarea value={text} maxLength={50000} disabled={busy} onChange={event => setText(event.target.value)} /></label>
+      {latest?.confidence != null && <p className="teacher-confidence">자동 변환 신뢰도 참고값 {Math.round(latest.confidence * 100)}% · 점수나 수준으로 사용하지 않음</p>}
+      <label>확인·수정 이유<input value={reason} maxLength={1000} disabled={busy} onChange={event => setReason(event.target.value)} /></label>
+      <button type="button" className="outline-button" disabled={busy || !text.trim() || reason.trim().length < 5} onClick={() => void save()}>{busy ? "저장 중…" : latest?.kind === "teacher_correction" ? "확인본 새 버전 저장" : "원본 대조 완료·확인본 저장"}</button>
+    </>}
     {notice && <p className="save-notice" role="status">{notice}</p>}{error && <p className="ai-generation-error" role="alert">{error}</p>}
   </div>;
 }

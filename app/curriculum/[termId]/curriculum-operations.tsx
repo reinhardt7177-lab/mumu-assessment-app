@@ -12,8 +12,10 @@ import AssessmentRecordDialog from "./assessment-record-dialog";
 import { FeedbackDialog, InterventionDialog, ReassessmentDialog } from "./growth-support-dialogs";
 import SemesterJudgementDialog from "./semester-judgement-dialog";
 import { requestJson } from "../../../lib/client-api";
+import { confirmedGrowthCodes } from "../../../lib/semester-report";
+import { evidenceRubrics } from "../../../lib/evidence-rubrics";
 
-const modalityLabel = { text: "글", photo: "손글씨 사진", speech: "말하기", observation: "관찰", chat: "챗봇 대화", multimodal: "복합 응답" };
+const modalityLabel = { text: "글", photo: "손글씨 사진", speech: "말하기", screen: "화면 녹화", observation: "관찰", chat: "챗봇 대화", multimodal: "복합 응답" };
 const assistanceLabel = {
   independent: "독립 수행",
   teacher_prompt: "교사 질문",
@@ -25,11 +27,11 @@ const feedbackStatus = {
   planned: "추가 학습 계획",
   in_progress: "추가 학습 중",
   ready_for_reassessment: "독립 재평가 필요",
-  completed: "성장 확인 완료",
+  completed: "재평가 연결 완료",
 };
 type ImportedResponse = {
   responseEvidenceId: string;
-  modality: "photo" | "speech" | "chat";
+  modality: "photo" | "speech" | "chat" | "screen";
   assistanceLevel: string;
   derivedText?: string | null;
   confidence?: number | null;
@@ -45,6 +47,7 @@ function importedAnswers(value: string | null): ImportedAnswers | null {
   } catch { return null; }
 }
 function visibleResponseText(response: ImportedResponse) {
+  if (response.modality === "screen") return "화면 녹화 원본이 저장되었습니다. 교사 답안 화면에서 원본을 확인한 뒤 판단하세요.";
   if (response.derivedText) return response.derivedText;
   if (response.chat) return response.chat.messages.filter(message => message.role === "student").map(message => message.content).join("\n");
   return "변환된 답안 없음";
@@ -84,7 +87,7 @@ export default function CurriculumOperations({
     {tab === "evidence" ? <div className="operation-panel" role="tabpanel">
       <div className="operation-panel-intro"><div><strong>학생이 무엇을 했는지 먼저 남깁니다</strong><p>원본·도움 수준·평가 맥락을 보존하고, 잠긴 루브릭의 각 기준을 따로 판단합니다.</p></div><span>AI 제안 ≠ 교사 최종 판단</span></div>
       {workflow.evidence.length === 0 ? <OperationEmpty title="아직 수행 증거가 없습니다." description="첫 단원 평가를 기록하면 학생별 성장 이력이 시작됩니다." action="평가·증거 기록" onAction={() => setRecording(true)} /> : <div className="evidence-work-list">
-        {workflow.evidence.map(item => <EvidenceCard key={item.id} item={item} rubric={workflow.rubrics.find(rubric => rubric.unitId === item.unitId && rubric.state === "locked")} onReview={() => setReviewEvidence(item)} onFeedback={() => setFeedbackSeed(item)} onRefresh={onRefresh} />)}
+        {workflow.evidence.map(item => <EvidenceCard key={item.id} item={item} rubrics={evidenceRubrics(workflow.rubrics, item)} onReview={() => setReviewEvidence(item)} onFeedback={() => setFeedbackSeed(item)} onRefresh={onRefresh} />)}
       </div>}
     </div> : null}
 
@@ -115,7 +118,8 @@ export default function CurriculumOperations({
   </section>;
 }
 
-function EvidenceCard({ item, rubric, onReview, onFeedback, onRefresh }: { item: WorkflowEvidenceRecord; rubric?: WorkflowRubricRecord; onReview: () => void; onFeedback: () => void; onRefresh: () => Promise<void> }) {
+function EvidenceCard({ item, rubrics, onReview, onFeedback, onRefresh }: { item: WorkflowEvidenceRecord; rubrics: WorkflowRubricRecord[]; onReview: () => void; onFeedback: () => void; onRefresh: () => Promise<void> }) {
+  const rubric = { criteria: rubrics.flatMap(value => value.criteria) };
   const final = item.judgements.filter(judgement => judgement.state === "final");
   const imported = importedAnswers(item.transformedText ?? item.originalText);
   const text = item.transformedText ?? item.originalText ?? "비공개 원본 참조로 보관된 수행 증거";
@@ -145,14 +149,8 @@ function EvidenceCard({ item, rubric, onReview, onFeedback, onRefresh }: { item:
   </article>;
 }
 function GrowthChange({ cycle, workflow }: { cycle: WorkflowFeedbackRecord; workflow: CurriculumWorkflowRecord }) {
-  const judgements = workflow.evidence.flatMap(evidence => evidence.judgements.map(judgement => ({ ...judgement, evidenceId: evidence.id, collectedAt: evidence.collectedAt })));
-  const prior = judgements.filter(item => cycle.basisJudgementIds.includes(item.id)).sort((a, b) => a.collectedAt.localeCompare(b.collectedAt)).at(-1);
-  const reassessedIds = new Set(cycle.reassessments.filter(item => item.independent).map(item => item.newEvidenceId));
-  const current = judgements.filter(item => reassessedIds.has(item.evidenceId) && item.standardCode === cycle.standardCode && item.state === "final").sort((a, b) => a.collectedAt.localeCompare(b.collectedAt)).at(-1);
-  if (!prior && !current) return null;
-  const score = (level?: string) => level === "상" ? 3 : level === "중" ? 2 : level === "하" ? 1 : 0;
-  const delta = score(current?.level) - score(prior?.level);
-  return <div className="growth-change"><div><small>최초 근거</small><strong>{prior?.level ?? "판단 보류"}</strong></div><b>→</b><div><small>독립 재평가</small><strong>{current?.level ?? "증거 대기"}</strong></div><em className={delta > 0 ? "up" : delta < 0 ? "down" : "steady"}>{current ? delta > 0 ? `+${delta}단계 성장` : delta < 0 ? "추가 확인 필요" : "수준 유지" : "재평가 연결 필요"}</em></div>;
+  const improved = confirmedGrowthCodes(workflow.evidence, [cycle]).has(cycle.standardCode);
+  return <div className="growth-change"><div><small>성장 판단</small><strong>{improved ? "동일 평가 요소에서 향상 근거 확인" : cycle.reassessments.length ? "비교 가능한 확정 근거 검토 필요" : "독립 재평가 증거 대기"}</strong></div><em className={improved ? "up" : "steady"}>재평가 참여 횟수와 성취 향상은 구분합니다.</em></div>;
 }
 function SemesterMatrix({ dashboard, workflow, onCreate }: { dashboard: CurriculumDashboardRecord; workflow: CurriculumWorkflowRecord; onCreate: (studentId?: string, standardCode?: string) => void }) {
   const seen = new Set<string>();

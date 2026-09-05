@@ -32,11 +32,11 @@ export async function POST(_request: Request, { params }: { params: Promise<{ se
       });
       const allowed = new Set(selected.map(item => item.code));
       if (result.output.rubric.some(item => !allowed.has(item.standardCode))) throw new DesignAiError(502, "invalid_standard_mapping", "AI 루브릭의 성취기준 연결을 검증하지 못해 기본 초안을 제공했습니다.");
-      return privateJson({ session: await repository.saveBlueprint(sessionId, teacherId, { rubric: result.output.rubric, questions: session.blueprint?.questions ?? [], source: "ai" }), generation: { id: result.generationId, model: result.model, cached: result.cached, fallback: false } });
+      return privateJson({ session: await repository.saveBlueprint(sessionId, teacherId, { rubric: result.output.rubric, questions: session.blueprint?.questions ?? [], methods: session.blueprint?.methods, grading: session.blueprint?.grading, source: "ai" }), generation: { id: result.generationId, model: result.model, cached: result.cached, fallback: false } });
     } catch (error) {
       if (!(error instanceof DesignAiError)) throw error;
       const rubric = basicRubricDraft(session.competency);
-      return privateJson({ session: await repository.saveBlueprint(sessionId, teacherId, { rubric, questions: session.blueprint?.questions ?? [], source: "basic_draft" }), generation: { fallback: true, warning: error.message } });
+      return privateJson({ session: await repository.saveBlueprint(sessionId, teacherId, { rubric, questions: session.blueprint?.questions ?? [], methods: session.blueprint?.methods, grading: session.blueprint?.grading, source: "basic_draft" }), generation: { fallback: true, warning: error.message } });
     }
   } catch (error) { return apiError(error); }
 }

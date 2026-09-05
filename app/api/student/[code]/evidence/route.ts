@@ -45,13 +45,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
     const file = form.get("file");
     const durationValue = Number(form.get("durationSeconds") ?? 0);
     const identifiersRemovedConfirmed = form.get("identifiersRemoved") === "true";
-    if (!/^[\w-]{1,64}$/.test(questionId) || (modality !== "photo" && modality !== "speech") || !(file instanceof File)) {
+    if (!/^[\w-]{1,64}$/.test(questionId) || (modality !== "photo" && modality !== "speech" && modality !== "screen") || !(file instanceof File)) {
       throw new AppError(400, "문항·응답 방식·파일을 확인해 주세요.");
     }
     if (!identifiersRemovedConfirmed) {
-      throw new AppError(400, modality === "photo" ? "이름·번호가 보이지 않는 답안 영역만 촬영했는지 확인해 주세요." : "녹음에 이름·번호를 말하지 않았는지 확인해 주세요.");
+      const message = modality === "photo" ? "이름·번호가 보이지 않는 답안 영역만 촬영했는지 확인해 주세요." : modality === "speech" ? "녹음에 이름·번호를 말하지 않았는지 확인해 주세요." : "화면에 이름·번호·알림 등 개인정보가 보이지 않는지 확인해 주세요.";
+      throw new AppError(400, message);
     }
-    const durationSeconds = modality === "speech" && Number.isInteger(durationValue) && durationValue > 0 && durationValue <= 180 ? durationValue : null;
+    const maxDuration = modality === "screen" ? 30 : 180;
+    const durationSeconds = (modality === "speech" || modality === "screen") && Number.isInteger(durationValue) && durationValue > 0 && durationValue <= maxDuration ? durationValue : null;
     const validated = await validateEvidenceFile(file, modality);
     const blob = await storePrivateEvidence({ attemptId: attempt.id, questionId, modality, bytes: validated.bytes, mimeType: validated.mimeType });
     storedPathname = blob.pathname;

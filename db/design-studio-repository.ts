@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { AppError } from "../lib/assessment-domain";
+import { AppError, curriculumAssessmentLinkSchema, validateAssessment, type CurriculumAssessmentLinkInput } from "../lib/assessment-domain";
 import {
   alignmentCandidateSchema,
   competencyUnpackSchema,
@@ -16,7 +16,7 @@ import {
   type RubricDraftItem,
   type ValidityAudit,
 } from "../lib/design-studio-domain";
-import type { AssessmentDefinition } from "../lib/assessment-domain";
+import { assessmentMethodSchema, type AssessmentDefinition } from "../lib/assessment-domain";
 import type { Query } from "./repository";
 
 const sessionColumns = `s.id, s.owner_id AS "ownerId", s.title, s.grade, s.subject,
@@ -25,15 +25,18 @@ const sessionColumns = `s.id, s.owner_id AS "ownerId", s.title, s.grade, s.subje
 const timestamp = (value: unknown) => value instanceof Date ? value.toISOString() : String(value);
 const number = (value: unknown) => Number(value ?? 0);
 
+export type DesignUnitTarget = { unitId: string; termId: string; label: string; grade: number; subject: string; standardCodes: string[] };
+
 function mapSession(row: Record<string, unknown>): DesignSessionRecord {
   const source = row.source && typeof row.source === "object" ? row.source as DesignSessionRecord["source"] : null;
   const standards = Array.isArray(row.standards) ? alignmentCandidateSchema.array().parse(row.standards.map(item => ({ ...(item as object), confidence: number((item as { confidence?: unknown }).confidence) }))) : [];
   const competency = row.competency ? competencyUnpackSchema.parse(row.competency) : null;
   const rawBlueprint = row.blueprint && typeof row.blueprint === "object" ? row.blueprint as Record<string, unknown> : null;
+  const parsedMethods = assessmentMethodSchema.array().min(1).max(5).safeParse(rawBlueprint?.methods ?? ["text"]);
   const blueprint = rawBlueprint ? {
     rubric: rubricDraftItemSchema.array().parse(rawBlueprint.rubric ?? []),
     questions: questionDraftSchema.array().parse(rawBlueprint.questions ?? []),
-    methods: ["text"] as AssessmentDefinition["methods"],
+    methods: parsedMethods.success ? parsedMethods.data : ["text"] as AssessmentDefinition["methods"],
     grading: { upperThreshold: number((rawBlueprint.grading as { upperThreshold?: unknown } | undefined)?.upperThreshold || 80), middleThreshold: number((rawBlueprint.grading as { middleThreshold?: unknown } | undefined)?.middleThreshold || 50) },
   } : null;
   return {
@@ -62,7 +65,8 @@ export function createDesignStudioRepository(query: Query) {
       (SELECT c.output FROM competency_unpacks c WHERE c.session_id = s.id ORDER BY c.version DESC LIMIT 1) AS competency,
       (SELECT jsonb_build_object('rubric', b.rubric, 'questions', b.questions, 'methods', b.methods, 'grading', b.grading)
         FROM assessment_blueprints b WHERE b.session_id = s.id ORDER BY b.version DESC LIMIT 1) AS blueprint,
-      (SELECT v.output FROM validity_audits v WHERE v.session_id = s.id ORDER BY v.version DESC LIMIT 1) AS validity
+      (SELECT v.output FROM validity_audits v WHERE v.session_id = s.id ORDER BY v.version DESC LIMIT 1) AS validity,
+      (SELECT run.input_json->'questionPlan' FROM design_generation_runs run WHERE run.session_id = s.id AND run.feature = 'assessment_generation' ORDER BY run.created_at DESC LIMIT 1) AS "questionPlan"
       FROM design_sessions s WHERE s.id = $1 AND s.owner_id = $2`, [id, ownerId]);
     if (!rows[0]) throw new AppError(404, "평가 설계 작업을 찾을 수 없거나 접근 권한이 없습니다.");
     return mapSession(rows[0]);
@@ -70,6 +74,88 @@ export function createDesignStudioRepository(query: Query) {
 
   return {
     get,
+    async listUnitTargets(ownerId: string): Promise<DesignUnitTarget[]> {
+      const rows = await query(`SELECT u.id AS "unitId", t.id AS "termId", t.grade, t.subject,
+        concat(t.school_year, ' · ', t.semester, '학기 · ', t.class_name, ' · ', t.subject, ' · ', u.title) AS label,
+        (SELECT coalesce(jsonb_agg(us.standard_code ORDER BY us.position), '[]') FROM unit_standards us WHERE us.unit_id = u.id) AS "standardCodes"
+        FROM curriculum_units u JOIN curriculum_terms t ON t.id = u.term_id
+        WHERE t.owner_id = $1 AND t.status <> 'closed'
+        ORDER BY t.school_year DESC, t.semester DESC, t.class_name, u.order_index`, [ownerId]);
+      return rows.map(row => ({ ...row, grade: number(row.grade) })) as DesignUnitTarget[];
+    },
+    async approveInUnit(id: string, ownerId: string, input: AssessmentDefinition, rawLink: CurriculumAssessmentLinkInput) {
+      const definition = validateAssessment(input);
+      const link = curriculumAssessmentLinkSchema.parse(rawLink);
+      const session = await get(id, ownerId);
+      if (session.approvedAssessmentId) {
+        const previous = await query(`SELECT unit_id FROM assessment_events WHERE assessment_id = $1`, [session.approvedAssessmentId]);
+        if (previous[0]?.unit_id !== link.unitId) throw new AppError(409, "이미 승인된 평가의 단원 연결은 변경할 수 없습니다.");
+        return session.approvedAssessmentId;
+      }
+      const targets = await this.listUnitTargets(ownerId);
+      const target = targets.find(unit => unit.unitId === link.unitId && `${unit.grade}학년 ${unit.subject}` === definition.subject
+        && definition.standardCodes.every(code => unit.standardCodes.includes(code)));
+      if (!target) throw new AppError(409, "담당 학급의 학년·교과·성취기준이 일치하는 단원을 선택해 주세요.");
+      const existing = await query(`SELECT rv.id, us.standard_code AS code,
+        (SELECT jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name, 'description', c.description, 'high', c.high_descriptor, 'middle', c.middle_descriptor, 'low', c.low_descriptor) ORDER BY c.position)
+          FROM rubric_criteria c WHERE c.rubric_version_id = rv.id) AS criteria
+        FROM rubric_versions rv JOIN unit_standards us ON us.id = rv.unit_standard_id
+        WHERE us.unit_id = $1 AND rv.state = 'locked' ORDER BY rv.version DESC`, [link.unitId]);
+      const groups = definition.standardCodes.map(code => {
+        const criteria = definition.rubric.filter(item => item.standardCode === code).map(item => ({ ...item, description: session.blueprint?.rubric.find(source => source.standardCode === code && source.name === item.name)?.description ?? item.name }));
+        if (!criteria.length) throw new AppError(409, "선택한 모든 성취기준에 루브릭을 연결해 주세요.");
+        const matching = existing.find(row => row.code === code && Array.isArray(row.criteria) && row.criteria.length === criteria.length
+          && criteria.every((criterion, index) => ["name", "description", "high", "middle", "low"].every(key => (row.criteria as Record<string, unknown>[])[index][key] === criterion[key as keyof typeof criterion])));
+        return { code, id: matching ? String(matching.id) : randomUUID(), reuse: Boolean(matching),
+          criteria: criteria.map((criterion, index) => ({ ...criterion, description: session.blueprint?.rubric.find(item => item.standardCode === code && item.name === criterion.name)?.description ?? criterion.name, id: matching ? String((matching.criteria as { id: string }[])[index].id) : randomUUID(), key: `criterion-${index + 1}`, position: index + 1 })) };
+      });
+      const findCriterion = (code: string | undefined, name: string) => groups.find(group => group.code === code)?.criteria.find(item => item.name === name)?.id;
+      const linkedDefinition = validateAssessment({ ...definition,
+        rubric: definition.rubric.map(item => ({ ...item, rubricCriterionId: findCriterion(item.standardCode, item.name) })),
+        questions: definition.questions.map(item => ({ ...item, rubricCriterionId: findCriterion(item.standardCode, item.criterion) })),
+      });
+      const assessmentId = randomUUID();
+      const rows = await query(`WITH target AS (
+        SELECT s.id FROM design_sessions s JOIN curriculum_units u ON u.id = $6
+        JOIN curriculum_terms t ON t.id = u.term_id
+        WHERE s.id = $1 AND s.owner_id = $2 AND s.approved_assessment_id IS NULL
+          AND s.validity_checked_at IS NOT NULL AND t.owner_id = $2 AND t.status <> 'closed'
+          AND concat(t.grade, '학년 ', t.subject) = $11
+          AND (SELECT count(*) FROM unit_standards us WHERE us.unit_id = u.id AND us.standard_code IN (SELECT jsonb_array_elements_text($12::jsonb))) = $13
+          AND (SELECT NOT v.blocked FROM validity_audits v WHERE v.session_id = s.id ORDER BY v.version DESC LIMIT 1)
+        FOR UPDATE OF s, u
+      ), groups AS (
+        SELECT * FROM jsonb_to_recordset($7::jsonb) AS g(id uuid, code text, reuse boolean, criteria jsonb)
+      ), versions AS (
+        INSERT INTO rubric_versions (id, unit_standard_id, version, state, created_by, locked_at)
+        SELECT g.id, us.id, coalesce((SELECT max(rv.version) + 1 FROM rubric_versions rv WHERE rv.unit_standard_id = us.id), 1), 'locked', $2, now()
+        FROM groups g JOIN unit_standards us ON us.unit_id = $6 AND us.standard_code = g.code CROSS JOIN target
+        WHERE NOT g.reuse RETURNING id
+      ), criteria AS (
+        INSERT INTO rubric_criteria (id, rubric_version_id, criterion_key, name, description, high_descriptor, middle_descriptor, low_descriptor, position)
+        SELECT c.id, g.id, c.key, c.name, c.description, c.high, c.middle, c.low, c.position
+        FROM groups g JOIN versions v ON v.id = g.id
+        CROSS JOIN LATERAL jsonb_to_recordset(g.criteria) AS c(id uuid, key text, name text, description text, high text, middle text, low text, position int)
+        RETURNING id
+      ), inserted AS (
+        INSERT INTO assessments (id, owner_id, share_code, definition)
+        SELECT $3, $2, $4, $5::jsonb FROM target RETURNING id
+      ), event AS (
+        INSERT INTO assessment_events (id, unit_id, assessment_id, event_type, title, context, occurred_at, created_by)
+        SELECT $8, $6, id, $9, $5::jsonb->>'title', $10, $14::timestamptz, $2 FROM inserted RETURNING id
+      ), audit AS (
+        INSERT INTO curriculum_audit_events (id, owner_id, actor_id, event_type, entity_type, entity_id, metadata)
+        SELECT $15, $2, $2, 'design.assessment.linked', 'assessment_event', id,
+          jsonb_build_object('sessionId', $1::uuid, 'assessmentId', $3::uuid, 'unitId', $6::uuid) FROM event
+      ), updated AS (
+        UPDATE design_sessions s SET status = 'approved', current_step = 7, approved_assessment_id = inserted.id, updated_at = now()
+        FROM inserted WHERE s.id = $1 RETURNING inserted.id
+      ) SELECT id FROM updated`, [id, ownerId, assessmentId, randomBytes(8).toString("hex").toUpperCase(), JSON.stringify(linkedDefinition),
+        link.unitId, JSON.stringify(groups), randomUUID(), link.eventType, link.context, definition.subject,
+        JSON.stringify(definition.standardCodes), definition.standardCodes.length, link.occurredAt, randomUUID()]);
+      if (!rows[0]) throw new AppError(409, "설계가 변경됐거나 단원에 연결할 수 없습니다. 최신 타당도 점검을 완료해 주세요.");
+      return String(rows[0].id);
+    },
     async list(ownerId: string) {
       const rows = await query(`SELECT ${sessionColumns},
         NULL::jsonb AS source, '[]'::jsonb AS standards, NULL::jsonb AS competency, NULL::jsonb AS blueprint, NULL::jsonb AS validity,
@@ -150,16 +236,21 @@ export function createDesignStudioRepository(query: Query) {
       await query("UPDATE design_sessions SET current_step = greatest(current_step, 3), status = 'draft', validity_checked_at = NULL, updated_at = now() WHERE id = $1 AND owner_id = $2", [id, ownerId]);
       return get(id, ownerId);
     },
-    async saveBlueprint(id: string, ownerId: string, input: { rubric: RubricDraftItem[]; questions: QuestionDraft[]; source: DraftSource }) {
+    async saveBlueprint(id: string, ownerId: string, input: { rubric: RubricDraftItem[]; questions: QuestionDraft[]; methods?: AssessmentDefinition["methods"]; grading?: AssessmentDefinition["grading"]; source: DraftSource }) {
       const rubric = rubricDraftItemSchema.array().min(1).max(10).parse(input.rubric);
       const questions = questionDraftSchema.array().max(20).parse(input.questions);
+      const methods = assessmentMethodSchema.array().min(1).max(5).parse(input.methods ?? ["text"]);
+      const grading = input.grading ?? { upperThreshold: 80, middleThreshold: 50 };
+      if (!Number.isInteger(grading.upperThreshold) || !Number.isInteger(grading.middleThreshold) || grading.upperThreshold <= grading.middleThreshold) {
+        throw new AppError(400, "상·중·하 판단 기준값을 확인해 주세요.");
+      }
       const rows = await query(`WITH authorized AS (
         SELECT id FROM design_sessions WHERE id = $1 AND owner_id = $2 AND status <> 'approved'
       ), inserted AS (
-        INSERT INTO assessment_blueprints (id, session_id, version, source, rubric, questions)
-        SELECT $3, a.id, coalesce((SELECT max(b.version) + 1 FROM assessment_blueprints b WHERE b.session_id = a.id), 1), $4, $5::jsonb, $6::jsonb
+        INSERT INTO assessment_blueprints (id, session_id, version, source, rubric, questions, methods, grading)
+        SELECT $3, a.id, coalesce((SELECT max(b.version) + 1 FROM assessment_blueprints b WHERE b.session_id = a.id), 1), $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb
         FROM authorized a RETURNING id
-      ) SELECT id FROM inserted`, [id, ownerId, randomUUID(), input.source, JSON.stringify(rubric), JSON.stringify(questions)]);
+      ) SELECT id FROM inserted`, [id, ownerId, randomUUID(), input.source, JSON.stringify(rubric), JSON.stringify(questions), JSON.stringify(methods), JSON.stringify(grading)]);
       if (!rows[0]) throw new AppError(409, "루브릭과 문항 초안을 저장할 수 없는 설계입니다.");
       await query("UPDATE design_sessions SET current_step = greatest(current_step, $3), status = 'draft', validity_checked_at = NULL, updated_at = now() WHERE id = $1 AND owner_id = $2", [id, ownerId, questions.length ? 5 : 4]);
       return get(id, ownerId);
@@ -202,6 +293,11 @@ export function createDesignStudioRepository(query: Query) {
     async failGeneration(runId: string, ownerId: string, input: { code: string; message: string; latencyMs: number }) {
       await query(`UPDATE design_generation_runs SET status = 'error', error_code = $3, error_message = $4, latency_ms = $5, completed_at = now()
         WHERE id = $1 AND owner_id = $2 AND status = 'pending'`, [runId, ownerId, input.code.slice(0, 80), input.message.slice(0, 500), input.latencyMs]);
+    },
+    async rejectGeneration(runId: string, ownerId: string, message: string) {
+      // Retain provider output and usage for audit, but do not reuse invalid content as a success.
+      await query(`UPDATE design_generation_runs SET status = 'error', error_code = 'invalid_question_output', error_message = $3
+        WHERE id = $1 AND owner_id = $2 AND status = 'complete'`, [runId, ownerId, message.slice(0, 500)]);
     },
     async approve(id: string, ownerId: string, definition: AssessmentDefinition) {
       const assessmentId = randomUUID();

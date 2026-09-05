@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { createAssessmentRepository, type Query } from "../db/repository";
-import { AppError, validateAssessment, type AssessmentDefinition } from "../lib/assessment-domain";
+import { AppError, objectiveScoreDraft, publicAssessmentDefinition, validateAnswers, validateAssessment, type AssessmentDefinition } from "../lib/assessment-domain";
 
 const coreSchema = await readFile(new URL("../db/migrations/0001_assessment_core.sql", import.meta.url), "utf8");
 const growthSchema = await readFile(new URL("../db/migrations/0002_curriculum_growth.sql", import.meta.url), "utf8");
@@ -26,6 +26,16 @@ const definition = (): AssessmentDefinition => ({
   methods: ["text"], rubric: [{ name: "근거", high: "구체적인 근거를 들어 정확하게 설명한다.", middle: "근거를 일부 들어 설명한다.", low: "근거를 제시하는 데 도움이 필요하다." }], grading: { upperThreshold: 80, middleThreshold: 50 },
 });
 const owner = () => `teacher-${crypto.randomUUID()}`;
+
+test("문항별 허용 응답을 학생 정의에 보존하고 허용하지 않은 텍스트 제출을 차단", () => {
+  const base = definition();
+  const input = { ...base, methods: ["text", "photo"] as AssessmentDefinition["methods"], questions: [{ ...base.questions[0], responseMethods: ["photo"] }] };
+  const parsed = validateAssessment(input);
+  assert.deepEqual(publicAssessmentDefinition(parsed).questions[0].responseMethods, ["photo"]);
+  assert.throws(() => validateAnswers({ q1: "사진 대신 입력" }, parsed), status(400));
+  assert.throws(() => validateAssessment({ ...input, questions: [{ ...input.questions[0], responseMethods: ["speech"] }] }), status(400));
+  assert.throws(() => validateAssessment({ ...input, questions: [{ ...input.questions[0], responseMethods: ["photo", "photo"] }] }), status(400));
+});
 async function opened() { const teacher = owner(); const a = await repo.create(teacher, definition()); await repo.setStatus(a.id, teacher, "published"); return { teacher, a }; }
 const status = (code: number) => (error: unknown) => error instanceof AppError && error.status === code;
 
@@ -37,6 +47,38 @@ test("실제 초등 학년군·성취기준·문항·루브릭 연결 검증", (
   assert.throws(() => validateAssessment({ ...d, questions: [d.questions[0], d.questions[0]] }), status(400));
   assert.throws(() => validateAssessment({ ...d, rubric: [{ ...d.rubric[0], name: "다른 기준" }] }), status(400));
 });
+test("객관식·단답형 구성 검증, 학생 정답키 비노출, 자동 채점 초안", () => {
+  const base = definition();
+  const selected: AssessmentDefinition = {
+    ...base,
+    questions: [{ ...base.questions[0], kind: "선택형", choices: ["직접 민주 정치", "대의 민주 정치", "입헌 군주제", "전제 정치"], answerKey: ["대의 민주 정치"] }],
+  };
+  assert.equal(validateAssessment(selected).questions[0].kind, "선택형");
+  assert.throws(() => validateAssessment({ ...selected, questions: [{ ...selected.questions[0], choices: ["같은 보기", "같은 보기"] }] }), status(400));
+  assert.throws(() => validateAssessment({ ...selected, questions: [{ ...selected.questions[0], answerKey: ["없는 보기"] }] }), status(400));
+  assert.throws(() => validateAnswers({ q1: "임의 답" }, selected), status(400));
+  assert.equal(validateAnswers({ q1: "대의 민주 정치" }, selected, true).q1, "대의 민주 정치");
+
+  const short: AssessmentDefinition = {
+    ...base,
+    questions: [{ ...base.questions[0], kind: "단답형", answerKey: ["민주주의", "민주 주의"], choices: [] }],
+  };
+  assert.equal(objectiveScoreDraft(short.questions[0], "  민주주의  ")?.points, 20);
+  assert.equal(objectiveScoreDraft(short.questions[0], "왕정")?.points, 0);
+  assert.throws(() => validateAssessment({ ...short, questions: [{ ...short.questions[0], answerKey: [] }] }), status(400));
+
+  const publicDefinition = publicAssessmentDefinition(selected);
+  assert.equal(publicDefinition.questions[0].choices?.length, 4);
+  assert.equal("answerKey" in publicDefinition.questions[0], false);
+});
+
+test("말하기 문항은 오럴 테스트 응답 방식과 함께 저장", () => {
+  const base = definition();
+  const speaking = { ...base, questions: [{ ...base.questions[0], kind: "말하기" as const }] };
+  assert.throws(() => validateAssessment(speaking), status(400));
+  assert.equal(validateAssessment({ ...speaking, methods: ["text", "speech"] }).questions[0].kind, "말하기");
+});
+
 test("교사별 목록·상세·배포·학생 조회 권한 분리", async () => {
   const teacher = owner(); const a = await repo.create(teacher, definition());
   assert.equal((await repo.list(teacher)).length, 1); assert.equal((await repo.list(owner())).length, 0);

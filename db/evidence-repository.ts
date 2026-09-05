@@ -152,7 +152,7 @@ export function createEvidenceRepository(query: Query) {
     },
 
     async createAsset(attemptId: string, input: {
-      questionId: string; modality: "photo" | "speech"; blobPathname: string; originalFilename: string;
+      questionId: string; modality: "photo" | "speech" | "screen"; blobPathname: string; originalFilename: string;
       mimeType: string; byteSize: number; sha256: string; identifiersRemovedConfirmed: boolean; durationSeconds?: number | null;
     }) {
       const responseId = randomUUID();
@@ -165,7 +165,7 @@ export function createEvidenceRepository(query: Query) {
         LEFT JOIN teacher_evidence_policies policy ON policy.owner_id = a.owner_id
         WHERE s.id = $1 AND s.status = 'in_progress' AND a.status = 'published'
           AND (a.definition->'methods') ? $3
-          AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.definition->'questions') question WHERE question->>'id' = $2)
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.definition->'questions') question WHERE question->>'id' = $2 AND coalesce(question->'responseMethods', a.definition->'methods') ? $3)
       ), response AS (
         INSERT INTO attempt_response_evidence (id, attempt_id, question_id, modality, state)
         SELECT $4, attempt_id, $2, $3, 'ready' FROM authorized
@@ -306,7 +306,7 @@ export function createEvidenceRepository(query: Query) {
         JOIN teacher_evidence_policies policy ON policy.owner_id = assessment.owner_id AND policy.student_evidence_ai_enabled
         WHERE attempt.id = $1 AND attempt.status = 'in_progress' AND assessment.status = 'published'
           AND (assessment.definition->'methods') ? 'chat'
-          AND EXISTS (SELECT 1 FROM jsonb_array_elements(assessment.definition->'questions') question WHERE question->>'id' = $2)
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(assessment.definition->'questions') question WHERE question->>'id' = $2 AND coalesce(question->'responseMethods', assessment.definition->'methods') ? 'chat')
       ), response AS (
         INSERT INTO attempt_response_evidence (id, attempt_id, question_id, modality, assistance_level, state)
         SELECT $3, attempt_id, $2, 'chat', 'independent', 'ready' FROM authorized

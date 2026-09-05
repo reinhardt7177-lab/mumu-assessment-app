@@ -26,11 +26,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ se
     if (input.source) session = await repository.saveSource(sessionId, teacherId, input.source);
     if (input.standards) session = await repository.saveStandards(sessionId, teacherId, verifyAlignmentCandidates(session.grade, session.subject, input.standards));
     if (input.competency) session = await repository.saveCompetency(sessionId, teacherId, input.competency, "teacher");
-    if (input.rubric || input.questions) {
+    if (input.rubric || input.questions || input.methods) {
       const rubric = input.rubric ?? session.blueprint?.rubric;
       const questions = input.questions ?? session.blueprint?.questions ?? [];
+      const methods = input.methods ?? session.blueprint?.methods ?? ["text"];
+      const grading = session.blueprint?.grading ?? { upperThreshold: 80, middleThreshold: 50 };
       if (!rubric) throw new AppError(409, "먼저 루브릭 초안을 만들어 주세요.");
-      session = await repository.saveBlueprint(sessionId, teacherId, { rubric, questions, source: "teacher" });
+      session = await repository.saveBlueprint(sessionId, teacherId, { rubric, questions, methods, grading, source: "teacher" });
     }
     if (input.validity) session = await repository.saveValidity(sessionId, teacherId, input.validity, "teacher");
     return privateJson({ session });

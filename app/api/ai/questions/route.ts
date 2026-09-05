@@ -7,7 +7,7 @@ import curriculum from "../../../../data/achievement-standards.2022.json";
 import { getRepository } from "../../../../db/connection";
 
 export const maxDuration = 30;
-const promptVersion = "elementary-questions-v3";
+const promptVersion = "elementary-questions-v4";
 
 const requestSchema = z.object({
   title: z.string().trim().max(120),
@@ -23,10 +23,12 @@ const requestSchema = z.object({
 
 const questionItemSchema = z.object({
   prompt: z.string().trim().min(10).max(500).describe("학생에게 직접 제시할 명확한 평가 문항"),
-  kind: z.enum(["서술형", "선택형"]),
+  kind: z.enum(["선택형", "단답형", "서술형"]),
   standardCode: z.string().trim().min(4).max(30),
   criterion: z.enum(["개념 이해", "근거 제시", "논리적 설명"]),
   points: z.number().int().min(5).max(40),
+  choices: z.array(z.string().trim().min(1).max(300)).max(8).describe("선택형 보기. 다른 유형은 빈 배열"),
+  answerKey: z.array(z.string().trim().min(1).max(500)).max(10).describe("선택형 정답 1개 또는 단답형 인정 답안. 서술형은 빈 배열"),
 });
 
 const questionSchema = z.object({ questions: z.array(questionItemSchema) });
@@ -107,14 +109,15 @@ export async function POST(request: Request) {
         description: "초등학교 성취기준에 정렬된 교사용 평가 문항 초안",
         schema: z.object({ questions: z.array(generatedQuestionSchema).length(count) }),
       }),
-      maxOutputTokens: 1800,
+      maxOutputTokens: 2600,
       system: [
         "당신은 대한민국 초등학교 교사를 돕는 학생평가 문항 설계 전문가입니다.",
         "반드시 제공된 2022 개정 교육과정 성취기준 범위 안에서만 문항을 만드세요.",
         "초등학생의 발달 수준에 맞는 쉬운 문장으로 쓰고, 정답을 문항에 노출하지 마세요.",
         "각 문항은 관찰 가능한 수행을 요구해야 하며 교사가 루브릭으로 판단할 수 있어야 합니다.",
-        "현재는 글로 답하는 평가만 배포하므로 녹음, 사진 제출, 말하기 수행을 요구하지 마세요.",
-        "선택형은 보기가 필요한 경우 문항 본문에 ①~④ 보기를 함께 포함하세요.",
+        "kind는 선택형·단답형·서술형 중 학습 목표에 맞게 고르고, 설명·근거가 목표라면 서술형을 반드시 포함하세요.",
+        "선택형은 prompt에 보기를 섞지 말고 choices에 서로 다른 보기 4개를 쓰며 answerKey에는 그중 정답 하나를 정확히 복사하세요.",
+        "단답형은 choices를 비우고 answerKey에 허용할 정답 1~5개를 쓰세요. 서술형은 choices와 answerKey를 빈 배열로 쓰세요.",
       ].join("\n"),
       prompt: [
         `평가 이름: ${title || "새로운 학생 평가"}`,
@@ -140,6 +143,18 @@ export async function POST(request: Request) {
         latencyMs: Date.now() - startedAt,
       });
       return privateJson({ error: "생성된 문항의 성취기준 연결을 검증하지 못했습니다. 다시 생성해 주세요." }, 502);
+    }
+    if (questions.some(question =>
+      (question.kind === "선택형" && (question.choices.length < 2 || question.answerKey.length !== 1 || !question.choices.includes(question.answerKey[0])))
+      || (question.kind === "단답형" && question.answerKey.length < 1)
+      || (question.kind === "서술형" && (question.choices.length > 0 || question.answerKey.length > 0))
+    )) {
+      await repository.failQuestionGeneration(generationId, teacherId, {
+        errorCode: "invalid_question_type",
+        errorMessage: "생성된 문항의 보기와 정답 구성을 검증하지 못했습니다.",
+        latencyMs: Date.now() - startedAt,
+      });
+      return privateJson({ error: "문항 유형에 맞는 보기와 정답을 만들지 못했습니다. 다시 생성해 주세요." }, 502);
     }
     const completed = await repository.completeQuestionGeneration(generationId, teacherId, {
       output: { questions },

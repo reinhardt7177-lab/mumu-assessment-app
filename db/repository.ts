@@ -229,8 +229,8 @@ export function createAssessmentRepository(query: Query) {
         if (!policies[0]?.enabled || policies[0].providerId === "disabled") {
           throw new AppError(409, "학생 증거 AI 안전 설정에서 학교 승인과 외부 AI 제공자를 먼저 저장해 주세요.");
         }
-        if (assessment.definition.methods.some(method => method === "photo" || method === "speech") && !process.env.BLOB_READ_WRITE_TOKEN) {
-          throw new AppError(409, "사진·녹음 평가를 공개하려면 비공개 원본 저장소를 먼저 연결해 주세요.");
+        if (assessment.definition.methods.some(method => method === "photo" || method === "speech" || method === "screen") && !process.env.BLOB_READ_WRITE_TOKEN) {
+          throw new AppError(409, "사진·녹음·화면 녹화 평가를 공개하려면 비공개 원본 저장소를 먼저 연결해 주세요.");
         }
       }
       const from = status === "published" ? "draft" : "published";
@@ -307,6 +307,9 @@ export function createAssessmentRepository(query: Query) {
                     SELECT 1 FROM evidence_derivations derivation
                     WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
                   ))
+                  OR (response.modality = 'screen' AND EXISTS (
+                    SELECT 1 FROM evidence_assets asset WHERE asset.response_evidence_id = response.id
+                  ))
                   OR (response.modality = 'chat' AND EXISTS (
                     SELECT 1 FROM assessment_chat_sessions session
                     JOIN assessment_chat_messages message ON message.session_id = session.id AND message.role = 'student'
@@ -315,7 +318,7 @@ export function createAssessmentRepository(query: Query) {
                 )
             )
           ) ORDER BY question->>'id'`, [existing.id, JSON.stringify(answers)]);
-        if (missing.length) throw new AppError(400, `모든 문항에 글·사진·음성·챗봇 중 하나로 답한 뒤 제출해 주세요. (${missing.length}문항 남음)`);
+        if (missing.length) throw new AppError(400, `모든 문항에 허용된 답안 방식으로 응답한 뒤 제출해 주세요. (${missing.length}문항 남음)`);
       }
 
       const rows = await query(`WITH saved AS (
@@ -345,6 +348,9 @@ export function createAssessmentRepository(query: Query) {
             (response.modality IN ('photo', 'speech') AND EXISTS (
               SELECT 1 FROM evidence_derivations derivation
               WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
+            ))
+            OR (response.modality = 'screen' AND EXISTS (
+              SELECT 1 FROM evidence_assets asset WHERE asset.response_evidence_id = response.id
             ))
             OR (response.modality = 'chat' AND EXISTS (
               SELECT 1 FROM assessment_chat_sessions session
@@ -379,7 +385,7 @@ export function createAssessmentRepository(query: Query) {
             'assessmentTitle', linked.definition->>'title', 'timeSpentSeconds', linked.time_spent_seconds,
             'answers', (
               SELECT coalesce(jsonb_agg(jsonb_build_object(
-                'questionId', question->>'id', 'standardCode', question->>'standardCode',
+                'questionId', question->>'id', 'standardCode', question->>'standardCode', 'rubricCriterionId', question->>'rubricCriterionId',
                 'criterion', question->>'criterion', 'prompt', question->>'prompt',
                 'textAnswer', nullif(left(coalesce(linked.answers->>(question->>'id'), ''), 6000), ''),
                 'responses', (
@@ -417,7 +423,7 @@ export function createAssessmentRepository(query: Query) {
             'assessmentTitle', linked.definition->>'title',
             'answers', (
               SELECT coalesce(jsonb_agg(jsonb_build_object(
-                'questionId', question->>'id', 'standardCode', question->>'standardCode',
+                'questionId', question->>'id', 'standardCode', question->>'standardCode', 'rubricCriterionId', question->>'rubricCriterionId',
                 'criterion', question->>'criterion', 'prompt', question->>'prompt',
                 'answer', linked.answers->>(question->>'id')
               ) ORDER BY ordinality), '[]'::jsonb)
