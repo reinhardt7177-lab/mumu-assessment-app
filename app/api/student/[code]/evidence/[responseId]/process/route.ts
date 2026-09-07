@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { cookies } from "next/headers";
 import { getEvidenceRepository, getRepository } from "../../../../../../../db/connection";
 import { AppError } from "../../../../../../../lib/assessment-domain";
-import { ocrOutputSchema } from "../../../../../../../lib/evidence-domain";
+import { ocrOutputSchema, transformCapability } from "../../../../../../../lib/evidence-domain";
 import {
   classifyProviderError,
   EvidenceAiError,
@@ -40,8 +40,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
 
     // Ownership and the teacher's school-approval setting are checked again at transmission time.
     const context = await evidenceRepo.getProcessingContext(responseId, attempt.id);
+    const capability = transformCapability(context.modality);
+    if (!capability) throw new AppError(415, "사진·음성만 OCR 또는 전사할 수 있습니다. 화면 녹화는 교사가 직접 검토합니다.");
     const provider = resolveEvidenceAiProvider(context.providerId);
-    const capability = context.modality === "photo" ? "ocr" : "transcription";
     if (!provider.capabilities.has(capability)) throw new AppError(503, "선택한 AI 제공자가 이 응답 방식을 지원하지 않습니다.");
 
     const configuredLimit = Number(process.env.EVIDENCE_AI_HOURLY_LIMIT ?? 60);
@@ -53,12 +54,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
     const inputHash = createHash("sha256").update(JSON.stringify({
       responseId,
       assetSha256: context.assetSha256,
+      assetId: context.assetId,
       capability,
       model,
       promptVersion,
     })).digest("hex");
 
-    derivationId = await evidenceRepo.beginDerivation(responseId, capability === "ocr" ? "ocr" : "transcript", model, promptVersion);
+    derivationId = await evidenceRepo.beginDerivation(responseId, capability === "ocr" ? "ocr" : "transcript", model, promptVersion, context.assetId);
     runId = await evidenceRepo.beginAiRun({
       ownerId: context.ownerId,
       responseEvidenceId: responseId,
@@ -70,6 +72,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
 
     const asset = await readPrivateEvidence(context.blobPathname);
     if (asset.mimeType !== context.mimeType) throw new AppError(409, "저장된 원본의 파일 형식을 확인할 수 없습니다.");
+    if (createHash("sha256").update(asset.bytes).digest("hex") !== context.assetSha256) throw new AppError(409, "저장된 원본과 변환 요청의 내용이 일치하지 않습니다.");
+    const current = await evidenceRepo.getProcessingContext(responseId, attempt.id);
+    if (current.assetId !== context.assetId || current.providerId !== context.providerId) throw new AppError(409, "원본 또는 AI 설정이 바뀌었습니다. 다시 확인해 주세요.");
     const subjectId = anonymousId(attempt.id);
 
     if (context.modality === "photo") {

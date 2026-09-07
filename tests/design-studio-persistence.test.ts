@@ -17,6 +17,7 @@ const migrationNames = [
   "0001_assessment_core.sql", "0002_curriculum_growth.sql", "0003_ai_assessment_suggestions.sql",
   "0004_assessment_growth_bridge.sql", "0005_school_curriculum_plans.sql",
   "0006_teacher_classes_and_distributions.sql", "0007_design_studio.sql", "0008_multimodal_evidence.sql", "0009_screen_recording_evidence.sql",
+  "0010_evidence_integrity.sql",
 ];
 const schema = (await Promise.all(migrationNames.map(name => readFile(new URL(`../db/migrations/${name}`, import.meta.url), "utf8")))).join("\n");
 const adapter = (db: PGlite): Query => async <T extends Record<string, unknown>>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows;
@@ -90,6 +91,10 @@ test("스튜디오 승인→단원 루브릭→녹화 단독 제출→성장 증
   assert.equal(workflow.evidence.length, 1);
   assert.match(workflow.evidence[0].originalText!, /screen/);
   assert.ok(workflow.evidence[0].originalText!.includes(asset.assetId));
+  const snapshot = JSON.parse(workflow.evidence[0].originalText!);
+  assert.equal(snapshot.answers[0].responses[0].sourceAssetId, asset.assetId);
+  assert.equal(snapshot.answers[0].responses[0].derivationId, null);
+  assert.deepEqual(snapshot.answers[0].responses[0].assetIds, [asset.assetId]);
   await assert.rejects(growth.getAiSuggestionContext(workflow.evidence[0].id, assessment.definition.questions[0].rubricCriterionId!, owner), status(409));
   await assert.rejects(media.createAsset(attempt.id, { questionId: definition.questions[0].id, modality: "screen", blobPathname: "synthetic/second.webm", originalFilename: "second.webm", mimeType: "video/webm", byteSize: 128, sha256: "b".repeat(64), identifiersRemovedConfirmed: true }), status(409));
   const repeat = await preparedSession(owner);

@@ -16,6 +16,7 @@ const bridgeSchema = await readFile(new URL("../db/migrations/0004_assessment_gr
 const schoolPlanSchema = await readFile(new URL("../db/migrations/0005_school_curriculum_plans.sql", import.meta.url), "utf8");
 const classroomSchema = await readFile(new URL("../db/migrations/0006_teacher_classes_and_distributions.sql", import.meta.url), "utf8");
 const evidenceSchema = await readFile(new URL("../db/migrations/0008_multimodal_evidence.sql", import.meta.url), "utf8");
+const integritySchema = await readFile(new URL("../db/migrations/0010_evidence_integrity.sql", import.meta.url), "utf8");
 let pg: PGlite;
 let repo: ReturnType<typeof createGrowthRepository>;
 let assessmentRepo: ReturnType<typeof createAssessmentRepository>;
@@ -32,6 +33,7 @@ before(async () => {
   await pg.exec(schoolPlanSchema);
   await pg.exec(classroomSchema);
   await pg.exec(evidenceSchema);
+  await pg.exec(integritySchema);
   repo = createGrowthRepository(adapter(pg));
   assessmentRepo = createAssessmentRepository(adapter(pg));
 });

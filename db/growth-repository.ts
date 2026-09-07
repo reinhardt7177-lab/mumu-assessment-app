@@ -835,9 +835,9 @@ export function createGrowthRepository(query: Query) {
             (SELECT string_agg(CASE
               WHEN response.modality IN ('photo', 'speech') THEN
                 CASE response.modality WHEN 'photo' THEN '손글씨 확인본: ' ELSE '음성 전사 확인본: ' END ||
-                coalesce((SELECT derivation.extracted_text FROM evidence_derivations derivation
+                coalesce((SELECT derivation.extracted_text FROM current_evidence_derivations derivation
                   WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
-                  ORDER BY (derivation.kind = 'teacher_correction') DESC, derivation.created_at DESC LIMIT 1), '')
+                  ORDER BY (derivation.kind = 'teacher_correction') DESC, derivation.created_at DESC, derivation.id DESC LIMIT 1), '')
               WHEN response.modality = 'chat' THEN '챗봇 대화: ' || coalesce((
                 SELECT string_agg(CASE message.role WHEN 'student' THEN '학생: ' ELSE '생각 도우미: ' END || message.content ||
                   CASE WHEN message.role = 'assistant' AND message.help_type <> 'none' THEN ' [도움: ' || message.help_type || ']' ELSE '' END, E'\n' ORDER BY message.sequence)
@@ -874,7 +874,7 @@ export function createGrowthRepository(query: Query) {
               AND (char_length(btrim(coalesce(attempt.answers->>(q->>'id'), ''))) > 0
                 OR EXISTS (SELECT 1 FROM attempt_response_evidence r WHERE r.attempt_id = attempt.id AND r.question_id = q->>'id'
                   AND ((r.modality IN ('photo', 'speech') AND EXISTS (
-                    SELECT 1 FROM evidence_derivations d WHERE d.response_evidence_id = r.id AND d.status = 'complete' AND char_length(btrim(d.extracted_text)) > 0))
+                    SELECT 1 FROM current_evidence_derivations d WHERE d.response_evidence_id = r.id AND d.status = 'complete' AND char_length(btrim(d.extracted_text)) > 0))
                     OR (r.modality = 'chat' AND EXISTS (
                       SELECT 1 FROM assessment_chat_sessions cs JOIN assessment_chat_messages cm ON cm.session_id = cs.id
                       WHERE cs.response_evidence_id = r.id AND cm.role = 'student' AND char_length(btrim(cm.content)) > 0))

@@ -25,6 +25,7 @@ export const chatMessageInputSchema = z.object({
 });
 
 export const teacherCorrectionInputSchema = z.object({
+  sourceAssetId: z.string().uuid(),
   text: z.string().trim().min(1).max(50000),
   reason: z.string().trim().min(5).max(1000),
 });
@@ -50,11 +51,14 @@ export type EvidenceAssetRecord = {
   identifiersRemovedConfirmed: boolean;
   durationSeconds: number | null;
   createdAt: string;
+  retentionUntil: string;
+  available: boolean;
 };
 
 export type EvidenceDerivationRecord = {
   id: string;
   responseEvidenceId: string;
+  sourceAssetId: string | null;
   kind: "ocr" | "transcript" | "teacher_correction";
   model: string;
   promptVersion: string;
@@ -83,6 +87,7 @@ export type ResponseEvidenceRecord = {
   id: string;
   attemptId: string;
   questionId: string;
+  activeAssetId: string | null;
   modality: "photo" | "speech" | "chat" | "screen";
   assistanceLevel: "independent" | "teacher_prompt" | "step_hint" | "example" | "scaffolded";
   state: "capturing" | "ready" | "submitted" | "error";
@@ -127,3 +132,18 @@ export const criterionRecommendationOutputSchema = z.object({
 });
 
 export const POLICY_VERSION = "student-evidence-ai-v1";
+
+export function activeEvidenceAsset(response: ResponseEvidenceRecord | null, now = Date.now()) {
+  return response?.assets.find(asset => asset.id === response.activeAssetId && asset.available && Date.parse(asset.retentionUntil) > now) ?? null;
+}
+
+export function currentEvidenceDerivations(response: ResponseEvidenceRecord | null) {
+  const asset = activeEvidenceAsset(response);
+  return asset ? response!.derivations.filter(item => item.sourceAssetId === asset.id) : [];
+}
+
+export function transformCapability(modality: string) {
+  if (modality === "photo") return "ocr" as const;
+  if (modality === "speech") return "transcription" as const;
+  return null;
+}

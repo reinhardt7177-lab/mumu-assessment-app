@@ -25,4 +25,16 @@ test("문서 업로드도 같은 출처와 실제 multipart 바이트 제한을 
   await assert.rejects(readFormDataMutation(new Request("https://mumu.test/api/import", { method: "POST", body: foreign, headers: { origin: "https://other.test" } })), status(403));
 });
 test("개인 데이터 캐시 금지", () => assert.equal(privateJson({}).headers.get("cache-control"), "private, no-store"));
+test("혼합 대소문자·따옴표 multipart 경계값을 원문 그대로 보존", async () => {
+  const boundary = "----WebKitFormBoundaryMumuABC123";
+  for (const parameter of [boundary, `"${boundary}"`]) {
+    const request = new Request("https://mumu.test/api/import", { method: "POST",
+      headers: { origin: "https://mumu.test", "content-type": `Multipart/Form-Data; boundary=${parameter}` },
+      body: `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="plan.txt"\r\nContent-Type: text/plain\r\n\r\nsynthetic plan\r\n--${boundary}--\r\n`,
+    });
+    assert.equal((await request.clone().formData()).get("file") instanceof File, true);
+    const parsed = await readFormDataMutation(request);
+    assert.equal(await (parsed.get("file") as File).text(), "synthetic plan");
+  }
+});
 test("경로·ID 검증", () => { assert.throws(() => validateCode("../../teacher"), status(404)); assert.throws(() => validateId("' OR 1=1 --"), status(404)); });

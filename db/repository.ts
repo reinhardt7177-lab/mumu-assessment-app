@@ -291,6 +291,8 @@ export function createAssessmentRepository(query: Query) {
       if (assessment.status !== "published") throw new AppError(409, "마감된 평가는 더 이상 저장할 수 없습니다.");
       if (!Number.isInteger(input.revision) || !Number.isInteger(input.timeSpentSeconds) || input.timeSpentSeconds < 0 || input.timeSpentSeconds > 86400) throw new AppError(400, "저장 정보가 올바르지 않습니다.");
       const answers = validateAnswers(input.answers, assessment.definition, false);
+      // Asset replacement/transform completion races with submission must not reuse an earlier readiness check.
+      const [evidenceState] = await query(`SELECT evidence_revision FROM student_attempts WHERE id = $1`, [existing.id]);
 
       if (input.submit) {
         const missing = await query(`SELECT question->>'id' AS id
@@ -304,11 +306,11 @@ export function createAssessmentRepository(query: Query) {
               WHERE response.attempt_id = attempt.id AND response.question_id = question->>'id'
                 AND (
                   (response.modality IN ('photo', 'speech') AND EXISTS (
-                    SELECT 1 FROM evidence_derivations derivation
+                    SELECT 1 FROM current_evidence_derivations derivation
                     WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
                   ))
                   OR (response.modality = 'screen' AND EXISTS (
-                    SELECT 1 FROM evidence_assets asset WHERE asset.response_evidence_id = response.id
+                    SELECT 1 FROM available_evidence_assets asset WHERE asset.id = response.active_asset_id
                   ))
                   OR (response.modality = 'chat' AND EXISTS (
                     SELECT 1 FROM assessment_chat_sessions session
@@ -327,6 +329,8 @@ export function createAssessmentRepository(query: Query) {
           submitted_at = CASE WHEN $6 = 'submitted' THEN now() ELSE NULL END
         FROM assessments a WHERE s.assessment_id = a.id AND s.token_hash = $2
           AND a.status = 'published' AND s.status = 'in_progress' AND s.revision = $4
+          AND s.evidence_revision = $9
+          AND ($6 <> 'submitted' OR mumu_responses_complete(s.id, a.definition, $3::jsonb))
           AND (
             (s.distribution_id IS NULL AND a.share_code = $1)
             OR EXISTS (
@@ -346,11 +350,11 @@ export function createAssessmentRepository(query: Query) {
         FROM linked WHERE linked.status = 'submitted' AND response.attempt_id = linked.id
           AND (
             (response.modality IN ('photo', 'speech') AND EXISTS (
-              SELECT 1 FROM evidence_derivations derivation
+              SELECT 1 FROM current_evidence_derivations derivation
               WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
             ))
             OR (response.modality = 'screen' AND EXISTS (
-              SELECT 1 FROM evidence_assets asset WHERE asset.response_evidence_id = response.id
+              SELECT 1 FROM available_evidence_assets asset WHERE asset.id = response.active_asset_id
             ))
             OR (response.modality = 'chat' AND EXISTS (
               SELECT 1 FROM assessment_chat_sessions session
@@ -391,18 +395,20 @@ export function createAssessmentRepository(query: Query) {
                 'responses', (
                   SELECT coalesce(jsonb_agg(jsonb_build_object(
                     'responseEvidenceId', response.id, 'modality', response.modality,
+                    'sourceAssetId', response.active_asset_id,
+                    'derivationId', (SELECT d.id FROM current_evidence_derivations d WHERE d.response_evidence_id = response.id AND d.status = 'complete' ORDER BY d.created_at DESC, d.id DESC LIMIT 1),
                     'assistanceLevel', response.assistance_level,
                     'derivedText', CASE WHEN response.modality IN ('photo', 'speech') THEN (
-                      SELECT left(derivation.extracted_text, 6000) FROM evidence_derivations derivation
+                      SELECT left(derivation.extracted_text, 6000) FROM current_evidence_derivations derivation
                       WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
-                      ORDER BY derivation.created_at DESC LIMIT 1
+                      ORDER BY derivation.created_at DESC, derivation.id DESC LIMIT 1
                     ) END,
                     'confidence', CASE WHEN response.modality IN ('photo', 'speech') THEN (
-                      SELECT derivation.confidence FROM evidence_derivations derivation
+                      SELECT derivation.confidence FROM current_evidence_derivations derivation
                       WHERE derivation.response_evidence_id = response.id AND derivation.status = 'complete'
-                      ORDER BY derivation.created_at DESC LIMIT 1
+                      ORDER BY derivation.created_at DESC, derivation.id DESC LIMIT 1
                     ) END,
-                    'assetIds', (SELECT coalesce(jsonb_agg(asset.id ORDER BY asset.created_at), '[]'::jsonb) FROM evidence_assets asset WHERE asset.response_evidence_id = response.id),
+                    'assetIds', (SELECT coalesce(jsonb_agg(asset.id), '[]'::jsonb) FROM available_evidence_assets asset WHERE asset.id = response.active_asset_id),
                     'chat', CASE WHEN response.modality = 'chat' THEN (
                       SELECT jsonb_build_object(
                         'elapsedSeconds', session.elapsed_seconds,
@@ -444,7 +450,7 @@ export function createAssessmentRepository(query: Query) {
         FROM evidence JOIN linked ON linked.id = evidence.attempt_id
       ) SELECT ${attemptColumns} FROM saved s`,
       [code, hashToken(token), JSON.stringify(answers), input.revision, input.timeSpentSeconds,
-        input.submit ? "submitted" : "in_progress", randomUUID(), randomUUID()]);
+        input.submit ? "submitted" : "in_progress", randomUUID(), randomUUID(), evidenceState.evidence_revision]);
       if (!rows[0]) {
         const latest = await getAttempt(code, token);
         if (input.submit && latest.status === "submitted") return latest;
