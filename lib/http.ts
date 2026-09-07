@@ -35,8 +35,9 @@ export async function readMutation(request: Request, maxBytes = 250_000): Promis
 export async function readFormDataMutation(request: Request, maxBytes = 8_500_000) {
   const origin = request.headers.get("origin");
   if (!origin || origin !== new URL(request.url).origin) throw new AppError(403, "허용되지 않은 요청입니다.");
-  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
-  if (!contentType.startsWith("multipart/form-data;")) throw new AppError(415, "파일 업로드 형식을 확인해 주세요.");
+  const contentType = request.headers.get("content-type") ?? "";
+  // MIME types are case-insensitive; multipart boundary values are not.
+  if (!/^multipart\/form-data\s*;/i.test(contentType)) throw new AppError(415, "파일 업로드 형식을 확인해 주세요.");
   const declared = Number(request.headers.get("content-length") ?? 0);
   if (declared > maxBytes) throw new AppError(413, "업로드 내용이 너무 큽니다.");
   const reader = request.body?.getReader();

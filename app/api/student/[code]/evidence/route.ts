@@ -62,6 +62,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ cod
       originalFilename: safeOriginalFilename(file.name || `${modality}-answer`),
       mimeType: validated.mimeType, byteSize: file.size, sha256: validated.sha256, identifiersRemovedConfirmed, durationSeconds,
     });
+    // The DB owns this original now. A subsequent response/read failure must not delete it.
+    storedPathname = null;
     return privateJson({ responses: await getEvidenceRepository().listAttemptResponses(attempt.id) }, 201);
   } catch (error) {
     if (storedPathname) await removePrivateEvidence(storedPathname).catch(() => null);

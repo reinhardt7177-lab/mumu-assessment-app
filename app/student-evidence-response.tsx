@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { StudentAssessmentQuestion } from "../lib/assessment-domain";
 import { requestFormData, requestJson } from "../lib/client-api";
 import type { ResponseEvidenceRecord, StudentEvidencePayload } from "../lib/evidence-domain";
+import { activeEvidenceAsset, currentEvidenceDerivations } from "../lib/evidence-domain";
 
 type Method = "text" | "photo" | "speech" | "chat" | "screen";
 type Props = {
@@ -40,9 +41,9 @@ function captionTrack(text?: string | null) {
 
 export function responseIsComplete(response: ResponseEvidenceRecord | null) {
   if (!response) return false;
-  if (response.modality === "screen") return response.assets.length > 0;
+  if (response.modality === "screen") return Boolean(activeEvidenceAsset(response));
   if (response.modality === "chat") return Boolean(response.chat?.messages.some(message => message.role === "student"));
-  return response.derivations.some(item => item.status === "complete" && Boolean(item.extractedText?.trim()));
+  return currentEvidenceDerivations(response).some(item => item.status === "complete" && Boolean(item.extractedText?.trim()));
 }
 
 export default function StudentEvidenceResponse(props: Props) {
@@ -71,7 +72,8 @@ export default function StudentEvidenceResponse(props: Props) {
   const chat = latestForQuestion(evidence, question.id, "chat");
   const screen = latestForQuestion(evidence, question.id, "screen");
   const selectedResponse = method === "photo" ? photo : method === "speech" ? speech : method === "chat" ? chat : method === "screen" ? screen : null;
-  const latestDerivation = selectedResponse?.derivations.find(item => item.status === "complete") ?? selectedResponse?.derivations[0];
+  const currentDerivations = currentEvidenceDerivations(selectedResponse);
+  const latestDerivation = currentDerivations.find(item => item.status === "complete") ?? currentDerivations[0];
   const aiReady = policy.enabled && policy.aiConfigured;
   const mediaReady = aiReady && policy.storageConfigured;
   const tabs = useMemo(() => methods.filter(item => labels[item]), [methods]);
@@ -217,10 +219,10 @@ export default function StudentEvidenceResponse(props: Props) {
       {!mediaReady && <p className="evidence-readiness-warning">선생님이 학교 승인 설정과 비공개 저장소를 준비하면 사용할 수 있어요. 지금은 글 답안을 이용해 주세요.</p>}
       {method === "photo" ? <>
         <label className="evidence-file-picker">답안 영역 사진 선택<input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" disabled={disabled || busy || !mediaReady} onChange={event => setSelectedFile(event.target.files?.[0] ?? null)} /></label>
-        {photo?.assets[0] && <>
+        {activeEvidenceAsset(photo) && <>
           {/* Private assets require the student's authenticated cookie, so the browser must load the source directly. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="student-evidence-preview" src={`/api/student/${code}/evidence/assets/${photo.assets[0].id}`} alt="내가 올린 손글씨 답안" />
+          <img className="student-evidence-preview" src={`/api/student/${code}/evidence/assets/${photo!.activeAssetId}`} alt="내가 올린 손글씨 답안" />
         </>}
       </> : method === "speech" ? <>
         <div className="recording-controls">
@@ -228,7 +230,7 @@ export default function StudentEvidenceResponse(props: Props) {
           <label className="evidence-file-picker compact">또는 녹음 파일 선택<input type="file" accept="audio/webm,audio/mp4,audio/mpeg,audio/wav" disabled={disabled || busy || !mediaReady} onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setRecordedSeconds(0); }} /></label>
         </div>
         {recordedUrl && <audio className="student-audio-preview" controls src={recordedUrl}><track kind="captions" src={captionTrack()} srcLang="ko" label="한국어 전사" default />녹음을 재생할 수 없습니다.</audio>}
-        {speech?.assets[0] && !recordedUrl && <audio className="student-audio-preview" controls src={`/api/student/${code}/evidence/assets/${speech.assets[0].id}`}><track kind="captions" src={captionTrack(latestDerivation?.extractedText)} srcLang="ko" label="한국어 전사" default />녹음을 재생할 수 없습니다.</audio>}
+        {activeEvidenceAsset(speech) && !recordedUrl && <audio className="student-audio-preview" controls src={`/api/student/${code}/evidence/assets/${speech!.activeAssetId}`}><track kind="captions" src={captionTrack(latestDerivation?.extractedText)} srcLang="ko" label="한국어 전사" default />녹음을 재생할 수 없습니다.</audio>}
       </> : <>
         <p className="screen-recording-guide">디지털 작품을 만드는 과정을 최대 30초 동안 녹화합니다. 화면 공유 창에서 평가에 필요한 창만 선택하세요.</p>
         <div className="recording-controls">
@@ -236,13 +238,15 @@ export default function StudentEvidenceResponse(props: Props) {
           <label className="evidence-file-picker compact">또는 녹화 파일 선택<input type="file" accept="video/webm,video/mp4" disabled={disabled || busy || !mediaReady} onChange={event => { setSelectedFile(event.target.files?.[0] ?? null); setRecordedSeconds(0); }} /></label>
         </div>
         {recordedUrl && <video className="student-screen-preview" controls src={recordedUrl}><track kind="captions" src={captionTrack("화면 녹화에는 음성이 없습니다.")} srcLang="ko" label="음성 없음" default />화면 녹화를 재생할 수 없습니다.</video>}
-        {screen?.assets[0] && !recordedUrl && <video className="student-screen-preview" controls src={`/api/student/${code}/evidence/assets/${screen.assets[0].id}`}><track kind="captions" src={captionTrack("화면 녹화에는 음성이 없습니다.")} srcLang="ko" label="음성 없음" default />화면 녹화를 재생할 수 없습니다.</video>}
+        {activeEvidenceAsset(screen) && !recordedUrl && <video className="student-screen-preview" controls src={`/api/student/${code}/evidence/assets/${screen!.activeAssetId}`}><track kind="captions" src={captionTrack("화면 녹화에는 음성이 없습니다.")} srcLang="ko" label="음성 없음" default />화면 녹화를 재생할 수 없습니다.</video>}
       </>}
       <label className="identifier-confirmation"><input type="checkbox" checked={identifiersRemoved} disabled={disabled || busy || !selectedFile} onChange={event => setIdentifiersRemoved(event.target.checked)} />
         <span>{method === "photo" ? "사진에 이름·번호가 보이지 않고 답안 영역만 담겼어요." : method === "speech" ? "녹음에서 이름·번호를 말하지 않았어요." : "화면에 이름·번호·알림 등 개인정보가 보이지 않아요."}</span>
       </label>
       {selectedFile && <p className="selected-evidence-file">선택됨 · {selectedFile.name} · {(selectedFile.size / 1024 / 1024).toFixed(1)}MB</p>}
       <button type="button" className="primary-button" disabled={disabled || busy || !mediaReady || !selectedFile || !identifiersRemoved} onClick={() => void uploadAndProcess(method)}>{busy ? "안전하게 처리하는 중…" : method === "photo" ? "사진 저장하고 글자 읽기" : method === "speech" ? "녹음 저장하고 전사하기" : "화면 녹화 저장하기"}</button>
+      {selectedResponse?.activeAssetId && !activeEvidenceAsset(selectedResponse) && <p role="status">원본 보관 기간이 지났습니다. 선생님께 문의해 주세요.</p>}
+      {selectedResponse && selectedResponse.assets.length > 1 && <p>가장 최근에 올린 원본을 답안으로 사용합니다. 이전 업로드와 변환 이력은 별도로 보존됩니다.</p>}
       {method !== "screen" && latestDerivation && <div className={`evidence-derivation ${latestDerivation.status}`}>
         <strong>{latestDerivation.status === "complete" ? "변환된 답안" : latestDerivation.status === "pending" ? "변환 중" : "변환 실패"}</strong>
         {latestDerivation.extractedText && <p>{latestDerivation.extractedText}</p>}

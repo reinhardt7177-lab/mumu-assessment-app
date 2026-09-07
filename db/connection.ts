@@ -4,6 +4,7 @@ import { AppError } from "../lib/assessment-domain";
 import { createClassroomRepository } from "./classroom-repository";
 import { createDesignStudioRepository } from "./design-studio-repository";
 import { createEvidenceRepository } from "./evidence-repository";
+import { createEvidenceRetentionRepository } from "./evidence-retention-repository";
 import { createGrowthRepository } from "./growth-repository";
 import { createAssessmentRepository, type Query } from "./repository";
 
@@ -50,4 +51,8 @@ export function getDesignStudioRepository() {
 export function getEvidenceRepository() {
   if (!evidenceRepository) evidenceRepository = createEvidenceRepository(getQuery());
   return evidenceRepository;
+}
+
+export function getEvidenceRetentionRepository() {
+  return createEvidenceRetentionRepository(getQuery());
 }

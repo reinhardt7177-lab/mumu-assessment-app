@@ -21,6 +21,7 @@ function responseRecord(row: Record<string, unknown>): ResponseEvidenceRecord {
     id: String(row.id),
     attemptId: String(row.attemptId),
     questionId: String(row.questionId),
+    activeAssetId: row.activeAssetId == null ? null : String(row.activeAssetId),
     modality: row.modality as ResponseEvidenceRecord["modality"],
     assistanceLevel: row.assistanceLevel as ResponseEvidenceRecord["assistanceLevel"],
     state: row.state as ResponseEvidenceRecord["state"],
@@ -31,12 +32,14 @@ function responseRecord(row: Record<string, unknown>): ResponseEvidenceRecord {
         mimeType: String(asset.mimeType), byteSize: number(asset.byteSize), sha256: String(asset.sha256),
         identifiersRemovedConfirmed: Boolean(asset.identifiersRemovedConfirmed),
         durationSeconds: asset.durationSeconds == null ? null : number(asset.durationSeconds), createdAt: timestamp(asset.createdAt)!,
+        retentionUntil: timestamp(asset.retentionUntil)!, available: Boolean(asset.available),
       };
     }),
     derivations: derivations.map(item => {
       const derivation = item as Record<string, unknown>;
       return {
         id: String(derivation.id), responseEvidenceId: String(row.id), kind: derivation.kind as EvidenceDerivationRecord["kind"],
+        sourceAssetId: derivation.sourceAssetId == null ? null : String(derivation.sourceAssetId),
         model: String(derivation.model), promptVersion: String(derivation.promptVersion), status: derivation.status as EvidenceDerivationRecord["status"],
         extractedText: derivation.extractedText == null ? null : String(derivation.extractedText),
         confidence: derivation.confidence == null ? null : Number(derivation.confidence),
@@ -64,21 +67,24 @@ function responseRecord(row: Record<string, unknown>): ResponseEvidenceRecord {
 }
 
 const responseColumns = `r.id, r.attempt_id AS "attemptId", r.question_id AS "questionId", r.modality,
+  r.active_asset_id AS "activeAssetId",
   r.assistance_level AS "assistanceLevel", r.state, r.created_at AS "createdAt", r.updated_at AS "updatedAt",
   coalesce((SELECT jsonb_agg(jsonb_build_object(
     'id', asset.id, 'originalFilename', asset.original_filename, 'mimeType', asset.mime_type,
     'byteSize', asset.byte_size, 'sha256', asset.sha256,
     'identifiersRemovedConfirmed', asset.identifiers_removed_confirmed, 'durationSeconds', asset.duration_seconds,
-    'createdAt', asset.created_at
-  ) ORDER BY asset.created_at DESC) FROM evidence_assets asset WHERE asset.response_evidence_id = r.id), '[]') AS assets,
+    'createdAt', asset.created_at, 'retentionUntil', asset.retention_until,
+    'available', EXISTS (SELECT 1 FROM available_evidence_assets available WHERE available.id = asset.id)
+  ) ORDER BY (asset.id = r.active_asset_id) DESC, asset.created_at DESC, asset.id DESC) FROM evidence_assets asset WHERE asset.response_evidence_id = r.id), '[]') AS assets,
   coalesce((SELECT jsonb_agg(jsonb_build_object(
     'id', derivation.id, 'kind', derivation.kind, 'model', derivation.model,
+    'sourceAssetId', derivation.source_asset_id,
     'promptVersion', derivation.prompt_version, 'status', derivation.status,
     'extractedText', derivation.extracted_text, 'confidence', derivation.confidence,
     'segments', derivation.segments, 'errorCode', derivation.error_code,
     'errorMessage', derivation.error_message, 'correctionReason', derivation.correction_reason, 'createdAt', derivation.created_at,
     'completedAt', derivation.completed_at
-  ) ORDER BY derivation.created_at DESC) FROM evidence_derivations derivation WHERE derivation.response_evidence_id = r.id), '[]') AS derivations,
+  ) ORDER BY derivation.created_at DESC, derivation.id DESC) FROM evidence_derivations derivation WHERE derivation.response_evidence_id = r.id), '[]') AS derivations,
   (SELECT jsonb_build_object(
     'id', session.id, 'state', session.state, 'elapsedSeconds', session.elapsed_seconds,
     'helpCount', (SELECT count(*) FROM assessment_chat_messages help WHERE help.session_id = session.id AND help.role = 'assistant' AND help.help_type <> 'none'),
@@ -158,18 +164,17 @@ export function createEvidenceRepository(query: Query) {
       const responseId = randomUUID();
       const assetId = randomUUID();
       const rows = await query(`WITH authorized AS (
-        SELECT s.id AS attempt_id, a.owner_id,
-          coalesce(policy.retention_days, 90) AS retention_days
-        FROM student_attempts s
-        JOIN assessments a ON a.id = s.assessment_id
+        UPDATE student_attempts s SET evidence_revision = s.evidence_revision + 1
+        FROM assessments a
         LEFT JOIN teacher_evidence_policies policy ON policy.owner_id = a.owner_id
-        WHERE s.id = $1 AND s.status = 'in_progress' AND a.status = 'published'
+        WHERE s.id = $1 AND s.assessment_id = a.id AND s.status = 'in_progress' AND a.status = 'published'
           AND (a.definition->'methods') ? $3
           AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.definition->'questions') question WHERE question->>'id' = $2 AND coalesce(question->'responseMethods', a.definition->'methods') ? $3)
+        RETURNING s.id AS attempt_id, a.owner_id, coalesce(policy.retention_days, 90) AS retention_days
       ), response AS (
-        INSERT INTO attempt_response_evidence (id, attempt_id, question_id, modality, state)
-        SELECT $4, attempt_id, $2, $3, 'ready' FROM authorized
-        ON CONFLICT (attempt_id, question_id, modality) DO UPDATE SET state = 'ready', updated_at = now()
+        INSERT INTO attempt_response_evidence (id, attempt_id, question_id, modality, state, active_asset_id)
+        SELECT $4, attempt_id, $2, $3, 'ready', $5 FROM authorized
+        ON CONFLICT (attempt_id, question_id, modality) DO UPDATE SET state = 'ready', active_asset_id = excluded.active_asset_id, updated_at = now()
         RETURNING *
       ), asset AS (
         INSERT INTO evidence_assets (
@@ -188,7 +193,7 @@ export function createEvidenceRepository(query: Query) {
 
     async getAssetForStudent(assetId: string, attemptId: string) {
       const rows = await query(`SELECT asset.blob_pathname AS "blobPathname", asset.mime_type AS "mimeType"
-        FROM evidence_assets asset JOIN attempt_response_evidence response ON response.id = asset.response_evidence_id
+        FROM available_evidence_assets asset JOIN attempt_response_evidence response ON response.id = asset.response_evidence_id
         WHERE asset.id = $1 AND response.attempt_id = $2`, [assetId, attemptId]);
       if (!rows[0]) throw new AppError(404, "비공개 원본을 찾을 수 없습니다.");
       return rows[0] as { blobPathname: string; mimeType: string };
@@ -196,7 +201,7 @@ export function createEvidenceRepository(query: Query) {
 
     async getAssetForTeacher(assetId: string, ownerId: string) {
       const rows = await query(`SELECT asset.blob_pathname AS "blobPathname", asset.mime_type AS "mimeType"
-        FROM evidence_assets asset
+        FROM available_evidence_assets asset
         JOIN attempt_response_evidence response ON response.id = asset.response_evidence_id
         JOIN student_attempts attempt ON attempt.id = response.attempt_id
         JOIN assessments assessment ON assessment.id = attempt.assessment_id
@@ -207,7 +212,7 @@ export function createEvidenceRepository(query: Query) {
 
     async getProcessingContext(responseId: string, attemptId: string) {
       const rows = await query(`SELECT response.id AS "responseId", response.modality, asset.blob_pathname AS "blobPathname",
-        asset.mime_type AS "mimeType", asset.sha256 AS "assetSha256",
+        asset.mime_type AS "mimeType", asset.sha256 AS "assetSha256", asset.id AS "assetId",
         asset.identifiers_removed_confirmed AS "identifiersRemovedConfirmed", assessment.owner_id AS "ownerId",
         question->>'prompt' AS "questionPrompt", assessment.definition->>'learningGoal' AS "learningGoal",
         coalesce(policy.student_evidence_ai_enabled, false) AS "policyEnabled",
@@ -216,16 +221,16 @@ export function createEvidenceRepository(query: Query) {
         JOIN student_attempts attempt ON attempt.id = response.attempt_id
         JOIN assessments assessment ON assessment.id = attempt.assessment_id
         JOIN LATERAL jsonb_array_elements(assessment.definition->'questions') question ON question->>'id' = response.question_id
-        JOIN LATERAL (
-          SELECT * FROM evidence_assets candidate WHERE candidate.response_evidence_id = response.id ORDER BY candidate.created_at DESC LIMIT 1
-        ) asset ON true
+        JOIN available_evidence_assets asset ON asset.id = response.active_asset_id AND asset.response_evidence_id = response.id
         LEFT JOIN teacher_evidence_policies policy ON policy.owner_id = assessment.owner_id
-        WHERE response.id = $1 AND response.attempt_id = $2 AND attempt.status = 'in_progress'`, [responseId, attemptId]);
+        WHERE response.id = $1 AND response.attempt_id = $2 AND attempt.status = 'in_progress'
+          AND response.modality IN ('photo', 'speech') AND response.state <> 'submitted'
+          AND assessment.status = 'published'`, [responseId, attemptId]);
       if (!rows[0]) throw new AppError(404, "처리할 학생 증거를 찾을 수 없습니다.");
       if (!rows[0].policyEnabled) throw new AppError(409, "학교 확인을 거쳐 교사가 학생 증거 AI 분석을 활성화해야 합니다.");
       if (!rows[0].identifiersRemovedConfirmed) throw new AppError(409, "이름·번호가 제거된 답안 원본인지 먼저 확인해 주세요.");
       if (rows[0].providerId === "disabled") throw new AppError(409, "교사가 외부 AI 제공자를 선택해야 합니다.");
-      return rows[0] as { responseId: string; modality: "photo" | "speech"; blobPathname: string; mimeType: string; assetSha256: string; identifiersRemovedConfirmed: boolean; ownerId: string; questionPrompt: string; learningGoal: string; policyEnabled: boolean; providerId: string };
+      return rows[0] as { responseId: string; assetId: string; modality: "photo" | "speech"; blobPathname: string; mimeType: string; assetSha256: string; identifiersRemovedConfirmed: boolean; ownerId: string; questionPrompt: string; learningGoal: string; policyEnabled: boolean; providerId: string };
     },
 
     async saveTeacherCorrection(responseId: string, attemptId: string, ownerId: string, input: unknown) {
@@ -233,22 +238,23 @@ export function createEvidenceRepository(query: Query) {
       if (!parsed.success) throw new AppError(400, parsed.error.issues[0]?.message ?? "수정한 변환 내용과 이유를 확인해 주세요.");
       const id = randomUUID();
       const rows = await query(`WITH authorized AS (
-        SELECT response.id AS response_id, response.attempt_id
+        SELECT response.id AS response_id, response.attempt_id, response.active_asset_id
         FROM attempt_response_evidence response
         JOIN student_attempts attempt ON attempt.id = response.attempt_id
         JOIN assessments assessment ON assessment.id = attempt.assessment_id
+        JOIN available_evidence_assets asset ON asset.id = response.active_asset_id
         WHERE response.id = $1 AND response.attempt_id = $2 AND assessment.owner_id = $3
-          AND response.modality IN ('photo', 'speech')
-          AND EXISTS (SELECT 1 FROM evidence_derivations source WHERE source.response_evidence_id = response.id AND source.status = 'complete')
+          AND response.modality IN ('photo', 'speech') AND attempt.status = 'submitted'
+          AND response.active_asset_id = $7
       ), prior AS (
-        SELECT derivation.id FROM evidence_derivations derivation JOIN authorized ON authorized.response_id = derivation.response_evidence_id
-        WHERE derivation.status = 'complete' ORDER BY derivation.created_at DESC LIMIT 1
+        SELECT derivation.id FROM current_evidence_derivations derivation JOIN authorized ON authorized.response_id = derivation.response_evidence_id
+        WHERE derivation.status = 'complete' ORDER BY derivation.created_at DESC, derivation.id DESC LIMIT 1
       ), inserted AS (
         INSERT INTO evidence_derivations (
           id, response_evidence_id, kind, model, prompt_version, status,
-          extracted_text, confidence, segments, supersedes_id, correction_reason, completed_at
+          extracted_text, confidence, segments, supersedes_id, correction_reason, completed_at, source_asset_id
         ) SELECT $4, response_id, 'teacher_correction', 'teacher', 'manual-verification-v1', 'complete',
-          $5, NULL, '[]'::jsonb, (SELECT id FROM prior), $6, now() FROM authorized
+          $5, NULL, '[]'::jsonb, (SELECT id FROM prior), $6, now(), active_asset_id FROM authorized
         RETURNING *
       ), verified AS (
         UPDATE learning_evidence evidence SET transformation_status = 'teacher_verified', teacher_verified = true,
@@ -260,41 +266,58 @@ export function createEvidenceRepository(query: Query) {
             WHERE other.attempt_id = authorized.attempt_id AND other.modality IN ('photo', 'speech')
               AND other.id <> authorized.response_id
               AND NOT EXISTS (
-                SELECT 1 FROM evidence_derivations correction
+                SELECT 1 FROM current_evidence_derivations correction
                 WHERE correction.response_evidence_id = other.id AND correction.kind = 'teacher_correction' AND correction.status = 'complete'
               )
           )
         RETURNING evidence.id
       ) SELECT inserted.id, EXISTS (SELECT 1 FROM verified) AS "learningEvidenceVerified" FROM inserted`,
-      [responseId, attemptId, ownerId, id, parsed.data.text, parsed.data.reason]);
+      [responseId, attemptId, ownerId, id, parsed.data.text, parsed.data.reason, parsed.data.sourceAssetId]);
       if (!rows[0]) throw new AppError(404, "확인할 OCR·전사 결과를 찾을 수 없습니다.");
       return { id, learningEvidenceVerified: Boolean(rows[0].learningEvidenceVerified), reason: parsed.data.reason };
     },
 
-    async beginDerivation(responseId: string, kind: "ocr" | "transcript", model: string, promptVersion: string) {
+    async beginDerivation(responseId: string, kind: "ocr" | "transcript", model: string, promptVersion: string, sourceAssetId: string) {
       const id = randomUUID();
-      const rows = await query(`INSERT INTO evidence_derivations (id, response_evidence_id, kind, model, prompt_version)
-        SELECT $1, response.id, $3, $4, $5 FROM attempt_response_evidence response WHERE response.id = $2 AND response.state <> 'submitted'
-        RETURNING id`, [id, responseId, kind, model, promptVersion]);
+      const rows = await query(`INSERT INTO evidence_derivations (id, response_evidence_id, kind, model, prompt_version, source_asset_id)
+        SELECT $1, response.id, $3, $4, $5, asset.id FROM attempt_response_evidence response
+        JOIN available_evidence_assets asset ON asset.id = response.active_asset_id AND asset.id = $6
+        JOIN student_attempts attempt ON attempt.id = response.attempt_id AND attempt.status = 'in_progress'
+        WHERE response.id = $2 AND response.state <> 'submitted'
+          AND ((response.modality = 'photo' AND $3 = 'ocr') OR (response.modality = 'speech' AND $3 = 'transcript'))
+        RETURNING id`, [id, responseId, kind, model, promptVersion, sourceAssetId]);
       if (!rows[0]) throw new AppError(409, "제출된 증거는 다시 처리할 수 없습니다.");
       return id;
     },
 
     async completeDerivation(id: string, input: { text: string; confidence: number | null; segments?: unknown[] }) {
-      const rows = await query(`WITH completed AS (
-        UPDATE evidence_derivations SET status = 'complete', extracted_text = $2, confidence = $3,
-          segments = $4::jsonb, completed_at = now() WHERE id = $1 AND status = 'pending' RETURNING response_evidence_id
+      const rows = await query(`WITH attempt_lock AS (
+        UPDATE student_attempts attempt SET evidence_revision = attempt.evidence_revision + 1
+        FROM attempt_response_evidence response, evidence_derivations d
+        WHERE d.id = $1 AND d.status = 'pending' AND response.id = d.response_evidence_id
+          AND response.active_asset_id = d.source_asset_id AND response.attempt_id = attempt.id AND attempt.status = 'in_progress'
+        RETURNING attempt.id
+      ), completed AS (
+        UPDATE evidence_derivations d SET status = 'complete', extracted_text = $2, confidence = $3,
+          segments = $4::jsonb, completed_at = now()
+        FROM attempt_lock, attempt_response_evidence response, available_evidence_assets asset
+        WHERE d.id = $1 AND d.status = 'pending' AND response.id = d.response_evidence_id
+          AND response.attempt_id = attempt_lock.id AND response.active_asset_id = d.source_asset_id
+          AND asset.id = d.source_asset_id
+        RETURNING d.response_evidence_id, d.source_asset_id
       ) UPDATE attempt_response_evidence response SET state = 'ready', updated_at = now()
-        FROM completed WHERE response.id = completed.response_evidence_id RETURNING response.id`, [id, input.text, input.confidence, JSON.stringify(input.segments ?? [])]);
-      if (!rows[0]) throw new AppError(409, "변환 실행이 이미 완료되었습니다.");
+        FROM completed WHERE response.id = completed.response_evidence_id AND response.active_asset_id = completed.source_asset_id
+          AND response.state <> 'submitted' RETURNING response.id`, [id, input.text, input.confidence, JSON.stringify(input.segments ?? [])]);
+      if (!rows[0]) throw new AppError(409, "원본이 바뀌었거나 제출·보관 만료된 응답입니다. 현재 원본을 다시 확인해 주세요.");
     },
 
     async failDerivation(id: string, code: string, message: string) {
       await query(`WITH failed AS (
         UPDATE evidence_derivations SET status = 'error', error_code = $2, error_message = $3, completed_at = now()
-        WHERE id = $1 AND status = 'pending' RETURNING response_evidence_id
+        WHERE id = $1 AND status = 'pending' RETURNING response_evidence_id, source_asset_id
       ) UPDATE attempt_response_evidence response SET state = 'error', updated_at = now()
-        FROM failed WHERE response.id = failed.response_evidence_id`, [id, code.slice(0, 80), message.slice(0, 500)]);
+        FROM failed WHERE response.id = failed.response_evidence_id AND response.active_asset_id = failed.source_asset_id
+          AND response.state <> 'submitted'`, [id, code.slice(0, 80), message.slice(0, 500)]);
     },
 
     async createChatSession(attemptId: string, questionId: string) {

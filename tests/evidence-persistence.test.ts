@@ -12,6 +12,7 @@ const migrationNames = [
   "0001_assessment_core.sql", "0002_curriculum_growth.sql", "0003_ai_assessment_suggestions.sql",
   "0004_assessment_growth_bridge.sql", "0005_school_curriculum_plans.sql",
   "0006_teacher_classes_and_distributions.sql", "0007_design_studio.sql", "0008_multimodal_evidence.sql", "0009_screen_recording_evidence.sql",
+  "0010_evidence_integrity.sql",
 ];
 const schema = (await Promise.all(migrationNames.map(name => readFile(new URL(`../db/migrations/${name}`, import.meta.url), "utf8")))).join("\n");
 const adapter = (db: PGlite): Query => async <T extends Record<string, unknown>>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows;
@@ -71,7 +72,7 @@ test("선택 제공자·식별정보 제거 확인·OCR·챗봇·복합 제출·
   assert.equal(context.identifiersRemovedConfirmed, true);
   assert.equal(context.ownerId, teacher);
 
-  const derivationId = await evidence.beginDerivation(asset.responseId, "ocr", "synthetic/ocr", "ocr-test-v1");
+  const derivationId = await evidence.beginDerivation(asset.responseId, "ocr", "synthetic/ocr", "ocr-test-v1", asset.assetId);
   await evidence.completeDerivation(derivationId, { text: "시민이 함께 결정에 참여하는 제도입니다.", confidence: 0.92 });
   const chat = await evidence.createChatSession(attempt.id, "q1");
   await evidence.appendStudentChatMessage(chat.sessionId, attempt.id, "왜 함께 결정하는지가 중요하다고 생각해요.", 25);
@@ -89,6 +90,7 @@ test("선택 제공자·식별정보 제거 확인·OCR·챗봇·복합 제출·
   assert.equal(afterSubmit.find(item => item.modality === "chat")?.chat?.state, "submitted");
 
   const correction = await evidence.saveTeacherCorrection(asset.responseId, attempt.id, teacher, {
+    sourceAssetId: asset.assetId,
     text: "시민이 공동의 문제를 함께 결정하는 제도입니다.",
     reason: "합성 손글씨 원본과 대조해 빠진 낱말을 수정함",
   });

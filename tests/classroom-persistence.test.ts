@@ -15,6 +15,7 @@ const migrationNames = [
   "0005_school_curriculum_plans.sql",
   "0006_teacher_classes_and_distributions.sql",
   "0008_multimodal_evidence.sql",
+  "0010_evidence_integrity.sql",
 ];
 const schema = (await Promise.all(migrationNames.map(name => readFile(new URL(`../db/migrations/${name}`, import.meta.url), "utf8")))).join("\n");
 const adapter = (db: PGlite): Query => async <T extends Record<string, unknown>>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows;
