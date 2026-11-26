@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 import "./teacher-workspace.css";
@@ -16,7 +17,16 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ko">
-      <body>{process.env.CLERK_SECRET_KEY && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? <ClerkProvider signInUrl="/sign-in" signUpUrl="/sign-up">{children}</ClerkProvider> : children}</body>
+      <body>
+        {process.env.CLERK_SECRET_KEY && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? <ClerkProvider signInUrl="/sign-in" signUpUrl="/sign-up">{children}</ClerkProvider> : children}
+        <Script
+          id="mumu-visit-counter"
+          strategy="afterInteractive"
+          src="https://mumu-visit-counter.reinhardt7177.workers.dev/counter.js"
+          data-app="mumu-assessment-app"
+          data-api="https://mumu-visit-counter.reinhardt7177.workers.dev"
+        />
+      </body>
     </html>
   );
 }
